@@ -542,6 +542,8 @@ class JournalPage(QWidget):
         self._dirty = False
         self._render_nav()
         self._render_status(record)
+        # 重建归档列表：让「当前打开那天」的标记跟着走（否则会停在旧日期）
+        self._render_archive()
         self._sync_format_buttons()
 
     def _reset_editor_cursor(self) -> None:
@@ -670,6 +672,15 @@ class JournalPage(QWidget):
         self._btn_delete.setVisible(record is not None or self._dirty)
 
     def _render_archive(self) -> None:
+        """重建往日日记列表。当前打开的那天用「粗体 + 主题色」标记。
+
+        注意两个坑：
+        1. 标记必须在这里重建 —— `set_date()` 换了日期后如果不重建，
+           列表上的标记会停在旧日期，与正文对不上。
+        2. 粗体走 `Qt.ItemDataRole.FontRole`。用 `item.setFont()` 时
+           `item.font().bold()` 读回来不一定是真值（受 item 状态影响），
+           FontRole 是委托取值时直接用的，最可靠。
+        """
         journals = self._db.list_journals()
         self._count_label.setText(f"{len(journals)} 篇")
         self._archive.clear()
@@ -678,15 +689,19 @@ class JournalPage(QWidget):
         for record in journals:
             item = QListWidgetItem(self._archive)
             item.setData(Qt.ItemDataRole.UserRole, record.date)
-            item.setSizeHint(QSize(0, 32))
+            item.setSizeHint(QSize(0, 34))
             text = journal_html.plain_text(record.content)
             summary = text[:52] if text else "（只含图片或视频）"
             item.setText(f"{record.date}　{summary}")
-            item.setToolTip(f"{record.date} · 双击打开")
+            item.setToolTip(f"{record.date} · 双击打开"
+                            + ("（当前打开）" if record.date == self._day else ""))
+            font = item.font()
             if record.date == self._day:
-                font = item.font()
                 font.setBold(True)
-                item.setFont(font)
+            item.setData(Qt.ItemDataRole.FontRole, font)
+            if record.date == self._day:
+                # 当前这天的日期文字用主题色，和加粗一起构成"你在这里"的标记
+                item.setForeground(QColor(color("accent")))
 
     def save(self, quiet: bool = False) -> bool:
         """保存到数据库；返回是否成功。"""

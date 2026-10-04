@@ -17,7 +17,8 @@ import shutil
 import uuid
 from datetime import date as _date
 
-from PySide6.QtCore import QDate, QObject, QPointF, QRectF, QSize, QUrl, Qt, Signal
+from PySide6.QtCore import (QDate, QEvent, QObject, QPointF, QRectF, QSize,
+                            QTimer, QUrl, Qt, Signal)
 from PySide6.QtGui import (QColor, QFont, QImage, QPainter, QPen, QPixmap,
                            QPolygonF, QTextCharFormat, QTextCursor,
                            QTextDocument, QTextFormat, QTextImageFormat,
@@ -38,9 +39,16 @@ VIDEO_OBJECT_TYPE = QTextFormat.ObjectTypes.UserObject + 1
 IMAGE_FILTER = "图片 (*.png *.jpg *.jpeg *.webp *.gif)"
 VIDEO_FILTER = "视频 (*.mp4 *.webm *.mov)"
 PENDING_PREFIX = ".pending-"
-# 图片在编辑器里的最大显示宽度。旧日记里有单张 5~7 MB、宽几千像素的大图，
-# 一篇 26 张；按原尺寸渲染会吃掉几百 MB 内存并撑破窗口，所以统一缩放。
-MAX_IMAGE_DISPLAY_WIDTH = 320
+# 图片资源的「最长边」上限。
+#
+# 取值权衡（用户原图是 4096x3072 那种高清照）：
+# - 太小（如 320）会导致图片在编辑器里被放大显示而发糊；
+# - 太大（原尺寸）会让一篇 26 张图的日记吃掉 1 GB 以上内存
+#   （4096*3072*4B ≈ 50MB/张）。
+# 900 是折中：窗口放大到 900px 宽仍然清晰，26 张图约 65MB，可接受。
+MAX_IMAGE_RESOURCE_SIDE = 900
+# 显示宽度上限，避免过宽的图撑破窄窗口
+MAX_IMAGE_DISPLAY_WIDTH = 640
 
 
 def today_key() -> str:
@@ -203,6 +211,13 @@ class JournalPage(QWidget):
         self.refresh()
         self._load()
         self._editor.installEventFilter(self)
+        # 编辑器宽度变化时重排图片（防止窄窗口溢出、拉宽后发糊）
+        self._editor.viewport().installEventFilter(self)
+        self._reflow_timer = QTimer(self)
+        self._reflow_timer.setSingleShot(True)
+        self._reflow_timer.setInterval(220)
+        self._reflow_timer.timeout.connect(self._reflow_images)
+        self._last_reflow_width = 0
 
     # ---------------------------------------------------------------- UI
     def _build_ui(self) -> None:
@@ -381,6 +396,70 @@ class JournalPage(QWidget):
         layout = self._editor.document().documentLayout()
         layout.registerHandler(VIDEO_OBJECT_TYPE, self._handler)
 
+    # ------------------------------------------------------------ 图片重排
+    def eventFilter(self, obj, event) -> bool:      # noqa: N802
+        """监听编辑区尺寸变化，稍后重排图片。"""
+        if obj is self._editor.viewport() and event.type() == QEvent.Type.Resize:
+            width = self._editor.viewport().width()
+            if width > 120 and abs(width - self._last_reflow_width) > 12:
+                self._last_reflow_width = width
+                self._reflow_timer.start()
+        return super().eventFilter(obj, event)
+
+    def _reflow_images(self) -> None:
+        """按当前可用宽度重新计算图片显示宽度。
+
+        只改图片的显示宽度，不动正文文本，**也不能把日记标记成"有未保存改动"**：
+        改宽度同样会触发 `textChanged`，若不屏蔽，用户只是拉宽窗口看一眼旧日记，
+        切日期或退出时就会莫名弹出"日记还没保存"。
+        """
+        if not self.isVisible() and self._editor.viewport().width() <= 0:
+            return
+        available = self._editor.viewport().width() - 16
+        if available < 120:
+            return
+        document = self._editor.document()
+        cursor = self._editor.textCursor()
+        saved = cursor.position()
+        previous_loading = self._loading
+        self._loading = True              # 屏蔽 textChanged 引发的 _dirty
+        try:
+            block = document.begin()
+            while block.isValid():
+                iterator = block.begin()
+                while not iterator.atEnd():
+                    fragment = iterator.fragment()
+                    if fragment.isValid() and fragment.charFormat().isImageFormat():
+                        image_fmt = fragment.charFormat().toImageFormat()
+                        name = str(image_fmt.name() or "")
+                        if name and not name.lower().startswith(journal_html.VIDEO_PREFIX):
+                            resource = document.resource(
+                                QTextDocument.ResourceType.ImageResource, QUrl(name))
+                            width = getattr(resource, "width", None)
+                            if width is not None and width() > 0:
+                                target_width = float(max(48, min(
+                                    width(), available, MAX_IMAGE_DISPLAY_WIDTH)))
+                                if abs(image_fmt.width() - target_width) > 0.5:
+                                    target = fragment.position()
+                                    if target >= 0:
+                                        cursor.setPosition(target)
+                                        cursor.movePosition(
+                                            QTextCursor.MoveOperation.Right,
+                                            QTextCursor.MoveMode.KeepAnchor, 1)
+                                        updated = cursor.charFormat().toImageFormat()
+                                        updated.setWidth(target_width)
+                                        cursor.setCharFormat(updated)
+                                        cursor.clearSelection()
+                    iterator += 1
+                block = block.next()
+            cursor.setPosition(min(saved, max(0, document.characterCount() - 1)))
+            self._editor.setTextCursor(cursor)
+        finally:
+            self._loading = previous_loading
+        # 重排不是用户编辑，状态显示不能变成"未保存"
+        if not self._dirty:
+            self._render_status()
+
     # ------------------------------------------------------------ 外部接口
     def has_unsaved(self) -> bool:
         return self._dirty
@@ -453,14 +532,16 @@ class JournalPage(QWidget):
             self._editor.setHtml(f"<div>{journal_html._escape(record.content)}</div>")
         # setHtml 是新建文档，必须先设内容再注册资源与视频占位
         self._install_video_handler()
-        self._register_document_images()
+        # 用「按窗口宽度估算」的可用宽度，而不是此刻可能还没定型的 viewport 宽度
+        estimated = max(160, self.width() - 60)
+        self._register_document_images(estimated)
         self._loading = False
         self._dirty = False
         self._render_nav()
         self._render_status(record)
         self._sync_format_buttons()
 
-    def _register_document_images(self) -> None:
+    def _register_document_images(self, available: int | None = None) -> None:
         """把正文里的图片注册为文档资源，并限制显示尺寸。
 
         **资源键必须用「文档里图片对象的 name」原样**：Qt 渲染时拿这个键去查
@@ -471,21 +552,31 @@ class JournalPage(QWidget):
 
         顺带按最长边缩放并写回显示宽度：旧日记里有单张 5~7 MB、几千像素宽的图，
         一篇 26 张，按原尺寸渲染会吃掉几百 MB 内存并撑破窗口。
+
+        `available` 为编辑器可用宽度，由调用方按**最终布局**算出：
+        载入过程中 `_editor.viewport().width()` 可能还是旧值，直接用会让图片
+        比窗口还宽（出现横向滚动条）。
         """
         document = self._editor.document()
         cursor = self._editor.textCursor()
-        block = document.begin()
-        while block.isValid():
-            iterator = block.begin()
-            while not iterator.atEnd():
-                fragment = iterator.fragment()
-                if fragment.isValid() and fragment.charFormat().isImageFormat():
-                    self._register_one_image(document, cursor, fragment)
-                iterator += 1
-            block = block.next()
-        self._editor.setTextCursor(cursor)
+        previous_loading = self._loading
+        self._loading = True          # 改图片宽度会触发 textChanged，不能算用户编辑
+        try:
+            block = document.begin()
+            while block.isValid():
+                iterator = block.begin()
+                while not iterator.atEnd():
+                    fragment = iterator.fragment()
+                    if fragment.isValid() and fragment.charFormat().isImageFormat():
+                        self._register_one_image(document, cursor, fragment, available)
+                    iterator += 1
+                block = block.next()
+            self._editor.setTextCursor(cursor)
+        finally:
+            self._loading = previous_loading
 
-    def _register_one_image(self, document, cursor, fragment) -> None:
+    def _register_one_image(self, document, cursor, fragment,
+                            available: int | None = None) -> None:
         """为一个图片对象加载文件、按需缩放、注册资源并写回显示宽度。"""
         image_fmt = fragment.charFormat().toImageFormat()
         name = str(image_fmt.name() or "")
@@ -503,9 +594,10 @@ class JournalPage(QWidget):
         image = QImage(path)
         if image.isNull():
             return
-        # 按最长边约束：竖图（长截图）也要压下来，否则单张就占满好几屏
-        if max(image.width(), image.height()) > MAX_IMAGE_DISPLAY_WIDTH:
-            image = image.scaled(MAX_IMAGE_DISPLAY_WIDTH, MAX_IMAGE_DISPLAY_WIDTH,
+        # 按最长边约束资源尺寸（900px），既保证清晰度又控制内存；
+        # 与显示宽度解耦：显示宽度按视口给，Qt 会用高分辨率资源缩放出清晰的图。
+        if max(image.width(), image.height()) > MAX_IMAGE_RESOURCE_SIDE:
+            image = image.scaled(MAX_IMAGE_RESOURCE_SIDE, MAX_IMAGE_RESOURCE_SIDE,
                                  Qt.AspectRatioMode.KeepAspectRatio,
                                  Qt.TransformationMode.SmoothTransformation)
         document.addResource(QTextDocument.ResourceType.ImageResource,
@@ -520,9 +612,25 @@ class JournalPage(QWidget):
         cursor.movePosition(QTextCursor.MoveOperation.Right,
                             QTextCursor.MoveMode.KeepAnchor, 1)
         updated = cursor.charFormat().toImageFormat()
-        updated.setWidth(float(max(48, image.width())))
+        updated.setWidth(float(self._display_width(image, available)))
         cursor.setCharFormat(updated)
         cursor.clearSelection()
+
+    def _display_width(self, image: QImage, available: int | None = None) -> int:
+        """图片在编辑器里的显示宽度。
+
+        取「可用宽度」与「资源实际宽度」的较小值：
+        可用宽度比图片大时按原尺寸显示（不放大、不糊），
+        比图片小时按可用宽度缩（Qt 用高分辨率资源缩，清晰）。
+
+        `available` 由调用方显式传入：载入过程中 `_editor.viewport().width()`
+        可能还是旧布局值，直接用会导致图片比窗口宽（出现横向滚动条）。
+        """
+        if available is None:
+            available = self._editor.viewport().width() - 16
+        if available < 120:
+            available = 320            # 布局尚未定型时的兜底
+        return int(max(48, min(image.width(), available, MAX_IMAGE_DISPLAY_WIDTH)))
 
     def _render_nav(self) -> None:
         self._date_label.setText(human_date(self._day))
@@ -782,14 +890,15 @@ class JournalPage(QWidget):
             if image is not None and not image.isNull():
                 # 资源键必须与 fmt.name() 完全一致，否则 doc_to_html 取不到
                 scaled = image
-                if image.width() > MAX_IMAGE_DISPLAY_WIDTH:
-                    scaled = image.scaledToWidth(
-                        MAX_IMAGE_DISPLAY_WIDTH, Qt.TransformationMode.SmoothTransformation)
+                if max(image.width(), image.height()) > MAX_IMAGE_RESOURCE_SIDE:
+                    scaled = image.scaled(
+                        MAX_IMAGE_RESOURCE_SIDE, MAX_IMAGE_RESOURCE_SIDE,
+                        Qt.AspectRatioMode.KeepAspectRatio,
+                        Qt.TransformationMode.SmoothTransformation)
                 self._editor.document().addResource(
                     QTextDocument.ResourceType.ImageResource,
                     QUrl(full_name), scaled)
-                fmt.setWidth(float(min(MAX_IMAGE_DISPLAY_WIDTH,
-                                       max(80, scaled.width()))))
+                fmt.setWidth(float(self._display_width(scaled)))
         cursor.insertImage(fmt)
         cursor.insertBlock()
         cursor.endEditBlock()

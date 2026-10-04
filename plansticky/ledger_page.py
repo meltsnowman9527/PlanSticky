@@ -315,10 +315,15 @@ class TransactionDialog(QDialog):
 
         self._amount = QDoubleSpinBox(self)
         self._amount.setDecimals(2)
-        self._amount.setRange(0.01, 9_999_999.99)
+        # 允许 0：真实的最小值由 validate 判定（必须 > 0）。
+        # 若把 minimum 设成 0.01，表单一打开就已经是 0.01，
+        # 用户只填用途就保存会静默记成 0.01 元（旧版是空的必填框）。
+        self._amount.setRange(0.0, 9_999_999.99)
         self._amount.setPrefix("¥ ")
         self._amount.setSingleStep(1.0)
         self._amount.setValue(tx.amount if tx else 0.0)
+        if tx is None:
+            self._amount.setSpecialValueText("—")     # 0 时显示“—”，提示还没填
         self._amount.setAlignment(Qt.AlignmentFlag.AlignRight)
         form.addRow("金额（元）", self._amount)
 

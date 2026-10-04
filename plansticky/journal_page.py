@@ -532,6 +532,9 @@ class JournalPage(QWidget):
             self._editor.setHtml(f"<div>{journal_html._escape(record.content)}</div>")
         # setHtml 是新建文档，必须先设内容再注册资源与视频占位
         self._install_video_handler()
+        # 重置「当前字符格式」并回到开头：否则上一天如果切成过粗体/斜体，
+        # 这个格式会残留，新一天敲进去的字会莫名变粗（用户在 7-26 看到的现象）。
+        self._reset_editor_cursor()
         # 用「按窗口宽度估算」的可用宽度，而不是此刻可能还没定型的 viewport 宽度
         estimated = max(160, self.width() - 60)
         self._register_document_images(estimated)
@@ -540,6 +543,22 @@ class JournalPage(QWidget):
         self._render_nav()
         self._render_status(record)
         self._sync_format_buttons()
+
+    def _reset_editor_cursor(self) -> None:
+        """光标回到开头，并把当前字符格式清成「和开头一致」。
+
+        清格式必须用「插入点处的实际格式」（`charFormat()`），
+        不能自己造一个空 QTextCharFormat —— 那会把字体族/字号也一起抹掉，
+        导致新输入的文字与正文不一致。
+        """
+        cursor = self._editor.textCursor()
+        cursor.movePosition(QTextCursor.MoveOperation.Start)
+        self._editor.setTextCursor(cursor)
+        base = cursor.charFormat()
+        base.setFontWeight(QFont.Weight.Normal)
+        base.setFontItalic(False)
+        base.setFontUnderline(False)
+        self._editor.setCurrentCharFormat(base)
 
     def _register_document_images(self, available: int | None = None) -> None:
         """把正文里的图片注册为文档资源，并限制显示尺寸。

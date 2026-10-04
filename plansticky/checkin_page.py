@@ -35,10 +35,6 @@ def today_key() -> str:
     return _date.today().strftime("%Y-%m-%d")
 
 
-def month_key(day: str) -> str:
-    return str(day)[:7]
-
-
 def weekday_cn(day: str) -> str:
     try:
         parsed = _date.fromisoformat(day)

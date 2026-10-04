@@ -99,12 +99,6 @@ plan-sticky/
 │   └── 融合规格.md             # 旧版「清楚账本」的完整交互规格（重写依据）
 ├── scripts/
 │   └── make_icon.py           # 代码绘制应用图标 -> assets/icon.ico
-├── tests/
-│   ├── smoke_test.py          # 计划功能离屏冒烟测试
-│   ├── interaction_test.py    # 交互测试
-│   ├── drag_drop_test.py      # 拖拽排序测试
-│   ├── ledger_test.py         # 账本数据层 + 旧数据迁移测试
-│   └── ledger_ui_test.py      # 记账/图表/CSV/日记/签到 界面测试
 └── plansticky/                # 主包（分层清晰，便于改）
     ├── config.py              # 路径与常量（数据目录=%APPDATA%\PlanSticky）
     ├── database.py            # 计划数据层：任务 CRUD/排序/计数/设置
@@ -180,8 +174,6 @@ pyinstaller --noconfirm --clean PlanSticky.spec
 > 静态分析看不到），命令行方式会漏掉这两个。
 
 首次双击 exe 启动约 2~4 秒（PyInstaller 单文件解压），之后每次启动约 1 秒内。
-打包后的产物可以用 `tests\exe_smoke.py` 验证（会真正启动 exe、
-检查数据目录与旧数据迁移，全程用临时目录）。
 
 ---
 
@@ -284,35 +276,31 @@ A：删除 exe/源码目录即可；如需清除数据，删除 `%APPDATA%\PlanS
 
 ---
 
-## 开发 / 测试
+## 开发
 
 ```bat
-.venv\Scripts\python.exe tests\smoke_test.py          :: 计划功能（73 项）
-.venv\Scripts\python.exe tests\interaction_test.py    :: 交互（17 项）
-.venv\Scripts\python.exe tests\drag_drop_test.py      :: 拖拽排序（4 项）
-.venv\Scripts\python.exe tests\ledger_test.py         :: 账本数据层 + 迁移（144 项）
-.venv\Scripts\python.exe tests\ledger_ui_test.py      :: 记账/日记/签到 界面（138 项）
-.venv\Scripts\python.exe tests\exe_smoke.py           :: 打包产物验证（需先 build）
+:: 源码运行（改了代码直接这样看效果）
+run_debug.bat
+
+:: 重新打包单文件 exe
+build_exe.bat
 ```
 
-前五个离屏运行（不弹窗口），共 **376 项断言**；退出码 0 = 全部通过。
-`exe_smoke.py` 会真正启动 `dist\PlanSticky.exe`（含旧数据迁移与重复启动检查），
-共 18 项断言。所有测试都用临时数据目录，不会触碰真实数据。
-
 环境变量（调试用）：
-- `PLANSTICKY_DATA_DIR=<目录>`   数据目录重定向
-- `PLANSTICKY_LEDGER_DB=<文件>`  账本数据库单独重定向（测试隔离）
-- `PLANSTICKY_SINGLE=0`          关闭单实例保护
-- `PLANSTICKY_AUTOQUIT_MS=1500`  启动 1.5s 后自动退出（GUI 冒烟）
+- `PLANSTICKY_DATA_DIR=<目录>`   数据目录重定向（便携模式）
+- `PLANSTICKY_LEDGER_DB=<文件>`  账本数据库单独重定向
+- `PLANSTICKY_SINGLE=0`          关闭单实例保护（可同时开多个窗口）
+- `PLANSTICKY_AUTOQUIT_MS=1500`  启动 1.5s 后自动退出（做 GUI 冒烟用）
 - `PLANSTICKY_MONEY_DIR=<目录>`  指定旧「清楚账本」目录（迁移用）
-- `PLANSTICKY_UNSAVED_ANSWER=discard|save|cancel`  自动应答“未保存”确认框（测试用）
 
 主要扩展点：
 - 颜色与控件样式集中在 `theme.py`（两套调色板 + QSS 模板）；
 - 计划的新字段改 `database.py` 的 SCHEMA；账本的新字段改 `ledger_db.py` 的 SCHEMA
   （改动时注意与旧版保持兼容）；
 - 加新 Tab 参考 `main_window.py` 的 `TAB_KEYS` + 分段控件 + 页面构建；
-- 图表是自绘的（`ledger_charts.py`），照着 `heatmap.py` 的 `paintEvent` 写即可。
+- 图表是自绘的（`ledger_charts.py`），照着 `heatmap.py` 的 `paintEvent` 写即可；
+- 日记正文格式由 `journal_html.py` 负责（Qt 文档 ↔ 旧版 `div/br/img/video`），
+  改这里前先看模块头部注释，否则容易丢换行或让图片渲染成空白。
 
 ## 版本
 

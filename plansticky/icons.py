@@ -64,32 +64,6 @@ def make_app_icon(size: int = 64) -> QIcon:
     return QIcon(pm)
 
 
-def make_tray_pixmap(size: int = 22) -> QPixmap:
-    """托盘小图标：简化版（圆角底 + 细勾）。"""
-    pm = QPixmap(size, size)
-    pm.fill(Qt.GlobalColor.transparent)
-    p = QPainter(pm)
-    p.setRenderHint(QPainter.RenderHint.Antialiasing)
-    rect = QRectF(size * 0.02, size * 0.02, size * 0.96, size * 0.96)
-    path = QPainterPath()
-    path.addRoundedRect(rect, size * 0.24, size * 0.24)
-    p.fillPath(path, QColor(color("accent")))
-    p.setPen(QColor("#FFFFFF"))
-    pen = p.pen()
-    pen.setWidthF(size * 0.10)
-    pen.setCapStyle(Qt.PenCapStyle.RoundCap)
-    pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
-    p.setPen(pen)
-    pts = QPolygonF([
-        QPointF(size * 0.24, size * 0.52),
-        QPointF(size * 0.44, size * 0.70),
-        QPointF(size * 0.77, size * 0.32),
-    ])
-    p.drawPolyline(pts)
-    p.end()
-    return pm
-
-
 def make_app_icon_png_bytes(size: int = 256) -> bytes:
     """生成 PNG 字节（供打包脚本制作 .ico 用）。"""
     pm = QPixmap(size, size)

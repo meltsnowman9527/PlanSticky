@@ -32,11 +32,10 @@ Qt 文档不支持 `<video>` 元素，插入时会变成一个「未知对象」
 from __future__ import annotations
 
 import html as _html
+import os
 import re
 
 from PySide6.QtGui import QTextBlock, QTextCharFormat, QTextDocument, QTextImageFormat
-
-from plansticky.ledger_db import IMAGE_EXTS, VIDEO_EXTS
 
 VIDEO_PREFIX = "video:"
 PLACEHOLDER = "\ufffc"           # Qt 的对象替换符（图片/视频占位）
@@ -99,30 +98,9 @@ def is_blank(html_text: str) -> bool:
     return not plain_text(html_text)
 
 
-def first_image_url(html_text: str) -> str:
-    """取第一篇图片的 URL（归档封面用）；没有返回空串。"""
-    for match in _IMG_RE.finditer(str(html_text or "")):
-        src = _SRC_RE.search(match.group(0))
-        if src:
-            return src.group(1)
-    return ""
-
-
 def referenced_media(html_text: str) -> set[str]:
     """HTML 里引用到的媒体文件名集合。"""
     return {m.group(1) for m in _MEDIA_REF_RE.finditer(str(html_text or ""))}
-
-
-def is_valid_media_ref(url: str) -> bool:
-    """是否是合法的媒体引用（旧版规则：32 位 hex + 白名单扩展名）。"""
-    name = _basename(url)
-    if "." not in name:
-        return False
-    stem, ext = name.rsplit(".", 1)
-    ext = "." + ext.lower()
-    if len(stem) != 32 or not all(c in "0123456789abcdefABCDEF" for c in stem):
-        return False
-    return ext in IMAGE_EXTS or ext in VIDEO_EXTS
 
 
 def _is_video_name(name: str) -> bool:
@@ -196,13 +174,43 @@ def _image_to_html(fmt: QTextImageFormat) -> str:
     return f'<img src="{_escape_attr(source)}" alt="{_escape_attr(alt)}">'
 
 
-def _split_alt(name: str) -> tuple[str, str]:
-    """把资源名拆成 (文件名, alt)。没有 alt 时给默认文案。"""
+def split_media_name(name: str) -> tuple[str, str]:
+    """把资源名拆成 (资源键, alt)。
+
+    资源键就是「文档里图片对象的名字」，也是 Qt 渲染时查找资源的键。
+    调用方必须用同一个键去 `addResource`，否则图片渲染为空白。
+    """
     text = str(name or "").replace(ALT_SEP_ESCAPED, ALT_SEP)
     if ALT_SEP in text:
         head, _sep, tail = text.partition(ALT_SEP)
         return head, (tail or "日记图片")
     return text, "日记图片"
+
+
+def _split_alt(name: str) -> tuple[str, str]:
+    """兼容旧名（内部使用）。"""
+    return split_media_name(name)
+
+
+def media_local_path(resource_key: str) -> str:
+    """资源键 -> 磁盘绝对路径。
+
+    资源键形如 `/journal-images/xxx.jpg`（旧版 web 风格相对 URL）或
+    `video:xxx.mp4`。**必须转成绝对路径**：若把 `/journal-images/...`
+    直接交给 Qt，它按文件系统绝对路径解析（Windows 上变成当前盘根目录
+    `C:\\journal-images\\...`），图片就渲染成空白。
+    """
+    from plansticky import config
+    key, _alt = split_media_name(resource_key)
+    if key.lower().startswith(VIDEO_PREFIX):
+        filename = split_media_name(key[len(VIDEO_PREFIX):])[0]
+        return os.path.join(config.journal_videos_dir(), filename)
+    filename = key.replace("\\", "/").rsplit("/", 1)[-1]
+    if not filename:
+        return ""
+    if "/journal-videos/" in key.lower():
+        return os.path.join(config.journal_videos_dir(), filename)
+    return os.path.join(config.journal_images_dir(), filename)
 
 
 def image_name(filename: str, alt: str = "日记图片") -> str:
@@ -261,75 +269,3 @@ def prepare_for_editor(content: str) -> str:
     text = _VIDEO_RE.sub(replace_video, text)
     text = _IMG_RE.sub(replace_image, text)
     return text
-
-
-def editor_to_html(content: str) -> str:
-    """编辑器里的 HTML（可能是旧格式或 Qt 半成品）规整成标准旧版格式。
-
-    主要用于：粘贴进来的富文本、或从 `prepare_for_editor` 之外来源的内容。
-    正常保存走 `doc_to_html()`（更精确，能拿到每个字符的格式）。
-    """
-    text = str(content or "")
-    if not text.strip():
-        return ""
-
-    def convert_block(match: re.Match) -> str:
-        inner = match.group(2)
-        parts: list[str] = []
-        position = 0
-        # 逐个处理块内的 img / video / br / 文本
-        for token in re.finditer(
-                r"<img\b[^>]*>|<video\b[^>]*>\s*</video>|<video\b[^>]*/>|<br\s*/?>",
-                inner, re.IGNORECASE):
-            raw = inner[position:token.start()]
-            if raw.strip():
-                parts.append(_strip_tags(raw))
-            position = token.end()
-            tag = token.group(0)
-            low = tag.lower()
-            if low.startswith("<img"):
-                src = _SRC_RE.search(tag)
-                alt = _ALT_RE.search(tag)
-                name = _basename(src.group(1)) if src else ""
-                alt_text = _escape_attr(alt.group(1) if alt else "日记图片")
-                if name.lower().startswith(VIDEO_PREFIX):
-                    parts.append(f'<video src="{_escape_attr(_video_source(name))}" '
-                                 f'controls></video>')
-                elif name:
-                    parts.append(f'<img src="/journal-images/{_escape_attr(name)}" '
-                                 f'alt="{alt_text}">')
-            elif low.startswith("<video"):
-                src = _SRC_RE.search(tag)
-                if src:
-                    parts.append(f'<video src="{_escape_attr(src.group(1))}" '
-                                 f'controls></video>')
-            else:
-                parts.append("<br>")
-        tail = inner[position:]
-        if tail.strip():
-            parts.append(_strip_tags(tail))
-        content_html = "".join(parts)
-        return f"<div>{content_html}</div>" if content_html else "<div><br></div>"
-
-    normalized = re.sub(r"<(div|p)\b[^>]*>(.*?)</\1>", convert_block, text,
-                        flags=re.IGNORECASE | re.DOTALL)
-    if not normalized.strip():
-        normalized = convert_block(re.match(r"(?s)(.*)", text))
-    # 兜底：清理不认识的标签（保留 b/i/u/br/img/video）
-    normalized = re.sub(r"<(?![/]?(?:b|i|u|br|img|video|div)\b)[^>]+>", "",
-                        normalized, flags=re.IGNORECASE)
-    while "</div><div>" in normalized:
-        normalized = normalized.replace("</div><div>", "")
-    return normalized
-
-
-def _strip_tags(raw: str) -> str:
-    """保留行内强调标签，剥掉其余标签并转义文本。"""
-    pieces: list[str] = []
-    position = 0
-    for token in re.finditer(r"</?(?:b|i|u)\b[^>]*>", raw, re.IGNORECASE):
-        pieces.append(_escape(_html.unescape(_TAG_RE.sub("", raw[position:token.start()]))))
-        pieces.append(token.group(0).lower())
-        position = token.end()
-    pieces.append(_escape(_html.unescape(_TAG_RE.sub("", raw[position:]))))
-    return "".join(pieces)

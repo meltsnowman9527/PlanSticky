@@ -19,8 +19,9 @@ from datetime import date as _date
 
 from PySide6.QtCore import QDate, QObject, QPointF, QRectF, QSize, QUrl, Qt, Signal
 from PySide6.QtGui import (QColor, QFont, QImage, QPainter, QPen, QPixmap,
-                           QPolygonF, QTextCharFormat, QTextDocument,
-                           QTextFormat, QTextImageFormat, QTextObjectInterface)
+                           QPolygonF, QTextCharFormat, QTextCursor,
+                           QTextDocument, QTextFormat, QTextImageFormat,
+                           QTextObjectInterface)
 from PySide6.QtWidgets import (QCalendarWidget, QDialog, QFileDialog, QFrame,
                                QHBoxLayout, QLabel, QListWidget, QListWidgetItem,
                                QMessageBox, QPushButton, QTextEdit, QVBoxLayout,
@@ -37,6 +38,9 @@ VIDEO_OBJECT_TYPE = QTextFormat.ObjectTypes.UserObject + 1
 IMAGE_FILTER = "图片 (*.png *.jpg *.jpeg *.webp *.gif)"
 VIDEO_FILTER = "视频 (*.mp4 *.webm *.mov)"
 PENDING_PREFIX = ".pending-"
+# 图片在编辑器里的最大显示宽度。旧日记里有单张 5~7 MB、宽几千像素的大图，
+# 一篇 26 张；按原尺寸渲染会吃掉几百 MB 内存并撑破窗口，所以统一缩放。
+MAX_IMAGE_DISPLAY_WIDTH = 320
 
 
 def today_key() -> str:
@@ -49,15 +53,6 @@ def human_date(day: str) -> str:
     except ValueError:
         return str(day)
     return f"{parsed.year} 年 {parsed.month} 月 {parsed.day} 日"
-
-
-def _url_from_file(path: str) -> QUrl:
-    """把资源名转成 QUrl 键。
-
-    注意：资源名里可能有 `|` 和中文（alt 文本），必须用 fromLocalFile 之外的
-    方式构造，否则 `|` 会被当成 URL 分隔符而丢字符。
-    """
-    return QUrl(path)
 
 
 def _sniff_image_ext(data: bytes) -> str:
@@ -456,12 +451,78 @@ class JournalPage(QWidget):
         else:
             # 旧版纯文本日记：转成 HTML 后统一格式
             self._editor.setHtml(f"<div>{journal_html._escape(record.content)}</div>")
+        # setHtml 是新建文档，必须先设内容再注册资源与视频占位
         self._install_video_handler()
+        self._register_document_images()
         self._loading = False
         self._dirty = False
         self._render_nav()
         self._render_status(record)
         self._sync_format_buttons()
+
+    def _register_document_images(self) -> None:
+        """把正文里的图片注册为文档资源，并限制显示尺寸。
+
+        **资源键必须用「文档里图片对象的 name」原样**：Qt 渲染时拿这个键去查
+        资源表，键不一致就渲染成空白。另外正文用的是旧版 web 风格路径
+        （`/journal-images/x.jpg`），若直接当文件路径，在 Windows 上会被解析成
+        当前盘根目录（`C:\\journal-images\\...`）而找不到文件——所以统一转成
+        绝对路径再加载。
+
+        顺带按最长边缩放并写回显示宽度：旧日记里有单张 5~7 MB、几千像素宽的图，
+        一篇 26 张，按原尺寸渲染会吃掉几百 MB 内存并撑破窗口。
+        """
+        document = self._editor.document()
+        cursor = self._editor.textCursor()
+        block = document.begin()
+        while block.isValid():
+            iterator = block.begin()
+            while not iterator.atEnd():
+                fragment = iterator.fragment()
+                if fragment.isValid() and fragment.charFormat().isImageFormat():
+                    self._register_one_image(document, cursor, fragment)
+                iterator += 1
+            block = block.next()
+        self._editor.setTextCursor(cursor)
+
+    def _register_one_image(self, document, cursor, fragment) -> None:
+        """为一个图片对象加载文件、按需缩放、注册资源并写回显示宽度。"""
+        image_fmt = fragment.charFormat().toImageFormat()
+        name = str(image_fmt.name() or "")
+        if not name:
+            return
+        if name.lower().startswith(journal_html.VIDEO_PREFIX):
+            pixmap = QPixmap(1, 1)
+            pixmap.fill(QColor(0, 0, 0, 0))
+            document.addResource(QTextDocument.ResourceType.ImageResource,
+                                 QUrl(name), pixmap)
+            return
+        path = journal_html.media_local_path(name)
+        if not path or not os.path.isfile(path):
+            return
+        image = QImage(path)
+        if image.isNull():
+            return
+        # 按最长边约束：竖图（长截图）也要压下来，否则单张就占满好几屏
+        if max(image.width(), image.height()) > MAX_IMAGE_DISPLAY_WIDTH:
+            image = image.scaled(MAX_IMAGE_DISPLAY_WIDTH, MAX_IMAGE_DISPLAY_WIDTH,
+                                 Qt.AspectRatioMode.KeepAspectRatio,
+                                 Qt.TransformationMode.SmoothTransformation)
+        document.addResource(QTextDocument.ResourceType.ImageResource,
+                             QUrl(name), image)
+        # 宽度必须写回文档：toImageFormat() 拿到的是副本，改副本不影响文档。
+        # 步骤：选中该图片对象 -> 取 QTextImageFormat 副本改宽 ->
+        # setCharFormat 写回（QTextImageFormat 继承自 QTextCharFormat）。
+        target = fragment.position()
+        if target < 0:
+            return
+        cursor.setPosition(target)
+        cursor.movePosition(QTextCursor.MoveOperation.Right,
+                            QTextCursor.MoveMode.KeepAnchor, 1)
+        updated = cursor.charFormat().toImageFormat()
+        updated.setWidth(float(max(48, image.width())))
+        cursor.setCharFormat(updated)
+        cursor.clearSelection()
 
     def _render_nav(self) -> None:
         self._date_label.setText(human_date(self._day))
@@ -720,10 +781,15 @@ class JournalPage(QWidget):
             fmt.setName(full_name)
             if image is not None and not image.isNull():
                 # 资源键必须与 fmt.name() 完全一致，否则 doc_to_html 取不到
+                scaled = image
+                if image.width() > MAX_IMAGE_DISPLAY_WIDTH:
+                    scaled = image.scaledToWidth(
+                        MAX_IMAGE_DISPLAY_WIDTH, Qt.TransformationMode.SmoothTransformation)
                 self._editor.document().addResource(
                     QTextDocument.ResourceType.ImageResource,
-                    _url_from_file(full_name), image)
-                fmt.setWidth(float(min(320, max(80, image.width()))))
+                    QUrl(full_name), scaled)
+                fmt.setWidth(float(min(MAX_IMAGE_DISPLAY_WIDTH,
+                                       max(80, scaled.width()))))
         cursor.insertImage(fmt)
         cursor.insertBlock()
         cursor.endEditBlock()

@@ -200,16 +200,3 @@ def import_money_data(source_dir: Optional[str] = None,
         db.close()
 
     return report
-
-
-def offer_import_on_startup() -> Optional[str]:
-    """启动时的迁移决策。
-
-    返回 None 表示无需导入；否则返回要展示给用户的提示文案。
-    """
-    if already_imported():
-        return None
-    if not os.path.isfile(source_db_path()):
-        return None
-    report = import_money_data()
-    return report.summary()

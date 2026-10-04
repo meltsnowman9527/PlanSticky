@@ -69,10 +69,6 @@ def money(value: float, sign: bool = False, tx_type: str = TYPE_EXPENSE) -> str:
     return ("+" if tx_type == TYPE_INCOME else "-") + text
 
 
-def month_of(day: str) -> str:
-    return str(day)[:7]
-
-
 def today_key() -> str:
     return _date.today().strftime(FMT)
 

@@ -17,9 +17,10 @@ import json
 import os
 from datetime import date as _date
 
-from PySide6.QtCore import (QAbstractTableModel, QDate, QModelIndex, QPoint, Qt,
-                            Signal)
-from PySide6.QtGui import QAction, QColor, QFont
+from PySide6.QtCore import (QAbstractTableModel, QDate, QModelIndex, QPoint,
+                            QRectF, QSize, Qt, Signal)
+from PySide6.QtGui import (QAction, QColor, QFont, QIcon, QPainter,
+                           QPainterPath, QPixmap)
 from PySide6.QtWidgets import (QAbstractItemView, QCheckBox, QComboBox, QDateEdit,
                                QDialog, QDialogButtonBox, QDoubleSpinBox,
                                QFileDialog, QFormLayout, QFrame, QGridLayout,
@@ -75,6 +76,26 @@ def money(value: float, sign: bool = False, tx_type: str = TYPE_EXPENSE) -> str:
 
 def today_key() -> str:
     return _date.today().strftime(FMT)
+
+
+def _category_badge(icon: str, hex_color: str, size: int = 18) -> QIcon:
+    """分类单字图标：分类色的圆角小方块 + 白字。"""
+    from PySide6.QtGui import QIcon, QPainter, QPainterPath
+    pixmap = QPixmap(size, size)
+    pixmap.fill(Qt.GlobalColor.transparent)
+    painter = QPainter(pixmap)
+    painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+    path = QPainterPath()
+    path.addRoundedRect(QRectF(0, 0, size, size), size * 0.28, size * 0.28)
+    painter.fillPath(path, QColor(hex_color))
+    font = painter.font()
+    font.setPixelSize(int(size * 0.62))
+    font.setBold(True)
+    painter.setFont(font)
+    painter.setPen(QColor("#FFFFFF"))
+    painter.drawText(QRectF(0, 0, size, size), Qt.AlignmentFlag.AlignCenter, icon)
+    painter.end()
+    return QIcon(pixmap)
 
 
 def current_month() -> str:
@@ -228,7 +249,11 @@ class TransactionModel(QAbstractTableModel):
 
 # ================================================================== 记账表单
 class CategoryGrid(QWidget):
-    """8 宫格分类选择（单字色块 + 名称）。"""
+    """分类选择网格：每格 = 彩色单字图标 + 名称。
+
+    图标用分类自身颜色画成圆角小方块，比纯文字按钮好认；
+    选中态用「同色淡底 + 同色描边」，不用整块实心（太重）。
+    """
 
     changed = Signal(str)
 
@@ -240,19 +265,22 @@ class CategoryGrid(QWidget):
         self._buttons: dict[str, QPushButton] = {}
         grid = QGridLayout(self)
         grid.setContentsMargins(0, 0, 0, 0)
-        grid.setSpacing(4)
+        grid.setSpacing(5)
         for i, (name, icon, hex_color) in enumerate(CATEGORIES):
-            btn = QPushButton(f"{icon} {name}", self)
+            btn = QPushButton(f" {name}", self)
             btn.setCheckable(True)
             btn.setCursor(Qt.CursorShape.PointingHandCursor)
-            btn.setMinimumHeight(28)
+            btn.setMinimumHeight(32)
             btn.setStyleSheet(
-                f"QPushButton {{ border:1px solid {color('line')}; border-radius:7px;"
-                f" font-size:12px; color:{color('sub')}; }}"
+                f"QPushButton {{ border:1px solid {color('line')};"
+                f" border-radius:8px; padding:5px 6px; font-size:12px;"
+                f" color:{color('sub')}; text-align:left; }}"
+                f"QPushButton:hover {{ background:{color('hover')}; }}"
                 f"QPushButton:checked {{ border:1px solid {hex_color};"
-                f" color:{color('text')}; font-weight:600;"
-                f" background:{hex_color}22; }}"
-            )
+                f" color:{hex_color}; font-weight:600;"
+                f" background:{hex_color}1F; }}")
+            btn.setIcon(_category_badge(icon, hex_color))
+            btn.setIconSize(QSize(18, 18))
             btn.clicked.connect(lambda _=False, n=name: self.set_selected(n))
             grid.addWidget(btn, i // self.COLS, i % self.COLS)
             self._buttons[name] = btn
@@ -274,11 +302,15 @@ class CategoryGrid(QWidget):
         for name, btn in self._buttons.items():
             btn.setChecked(name == self._selected)
 
-
 class TransactionDialog(QDialog):
     """记一笔 / 修改这笔账。
 
-    与旧版表单一致：日期、金额、类型（支出/收入）、分类 8 宫格、用途、备注。
+    视觉要点（见 docs/记账界面设计规范.md）：
+    - 金额是主角：右侧大号输入，打开即聚焦；
+    - 日期与金额并排，省一行高度；
+    - 类型用紧凑双段，选中为淡底描边，不用整块实心；
+    - 分类走 CategoryGrid（彩色图标 + 名称）；
+    - 底部 取消(ghost) + 保存(primary) 右对齐，错误提示在按钮上方。
     """
 
     def __init__(self, db: LedgerDatabase, parent: QWidget | None = None,
@@ -289,82 +321,112 @@ class TransactionDialog(QDialog):
         self._type = tx.type if tx else TYPE_EXPENSE
         self.setWindowTitle("修改这笔账" if tx else "记一笔")
         self.setModal(True)
-        self.setMinimumWidth(320)
+        # 主窗口只有 400px 宽，表单不能比它更宽（否则挤在屏幕上很难看）
+        self.setMinimumWidth(340)
+        self.setMaximumWidth(392)
 
         root = QVBoxLayout(self)
         root.setContentsMargins(14, 12, 14, 12)
-        root.setSpacing(8)
+        root.setSpacing(9)
 
-        title = QLabel("修改这笔账" if tx else "今天花了什么？", self)
-        f = title.font()
-        f.setPointSizeF(f.pointSizeF() + 2)
-        f.setBold(True)
-        title.setFont(f)
+        # ---- 标题区
+        title = QLabel("修改这笔账" if tx else "记一笔", self)
+        title.setObjectName("sectionTitle")
+        title_font = title.font()
+        title_font.setPointSizeF(title_font.pointSizeF() + 3)
+        title_font.setBold(True)
+        title.setFont(title_font)
         root.addWidget(title)
-        hint = QLabel("数据只保存在这台电脑中。", self)
+        hint = QLabel("数据只保存在这台电脑中", self)
         hint.setObjectName("cardHint")
         root.addWidget(hint)
 
-        form = QFormLayout()
-        form.setContentsMargins(0, 4, 0, 0)
-        form.setSpacing(6)
-        form.setLabelAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        # ---- 金额（主角）：日期（窄）+ 金额（宽）并排
+        row = QHBoxLayout()
+        row.setContentsMargins(0, 2, 0, 0)
+        row.setSpacing(8)
 
+        date_box = QVBoxLayout()
+        date_box.setSpacing(3)
+        date_label = QLabel("日期", self)
+        date_label.setObjectName("fieldLabel")
+        date_box.addWidget(date_label)
         self._date = QDateEdit(self)
         self._date.setCalendarPopup(True)
         self._date.setDisplayFormat("yyyy-MM-dd")
         self._date.setMinimumHeight(CONTROL_HEIGHT)
         self._date.setDate(QDate.fromString(tx.date, "yyyy-MM-dd") if tx
                            else QDate.currentDate())
-        form.addRow("日期", self._date)
+        date_box.addWidget(self._date)
+        row.addLayout(date_box, 0)
 
+        amount_box = QVBoxLayout()
+        amount_box.setSpacing(3)
+        amount_label = QLabel("金额（元）", self)
+        amount_label.setObjectName("fieldLabel")
+        amount_box.addWidget(amount_label)
         self._amount = QDoubleSpinBox(self)
         self._amount.setDecimals(2)
-        # 允许 0：真实的最小值由 validate 判定（必须 > 0）。
+        # 允许 0：真实最小值由 validate 判定（必须 > 0）。
         # 若把 minimum 设成 0.01，表单一打开就已经是 0.01，
         # 用户只填用途就保存会静默记成 0.01 元（旧版是空的必填框）。
         self._amount.setRange(0.0, 9_999_999.99)
-        self._amount.setPrefix("¥ ")
         self._amount.setSingleStep(1.0)
         self._amount.setValue(tx.amount if tx else 0.0)
         if tx is None:
-            self._amount.setSpecialValueText("—")     # 0 时显示“—”，提示还没填
+            self._amount.setSpecialValueText("0.00")
         self._amount.setAlignment(Qt.AlignmentFlag.AlignRight)
         self._amount.setMinimumHeight(CONTROL_HEIGHT)
-        form.addRow("金额（元）", self._amount)
+        amount_font = self._amount.font()
+        amount_font.setPointSizeF(amount_font.pointSizeF() + 2)
+        self._amount.setFont(amount_font)
+        amount_box.addWidget(self._amount)
+        row.addLayout(amount_box, 1)
+        root.addLayout(row)
 
-        # 类型切换：支出红 / 收入绿（与旧版配色一致）
-        type_row = QWidget(self)
-        th = QHBoxLayout(type_row)
-        th.setContentsMargins(0, 0, 0, 0)
-        th.setSpacing(0)
-        self._btn_expense = QPushButton("支出", type_row)
-        self._btn_income = QPushButton("收入", type_row)
+        # ---- 类型：紧凑双段
+        type_row = QHBoxLayout()
+        type_row.setContentsMargins(0, 0, 0, 0)
+        type_row.setSpacing(8)
+        type_label = QLabel("类型", self)
+        type_label.setObjectName("fieldLabel")
+        type_label.setFixedWidth(52)
+        type_row.addWidget(type_label)
+        self._btn_expense = QPushButton("支出", self)
+        self._btn_income = QPushButton("收入", self)
         for btn in (self._btn_expense, self._btn_income):
             btn.setCheckable(True)
-            btn.setMinimumHeight(28)
+            btn.setMinimumHeight(CONTROL_HEIGHT)
             btn.setCursor(Qt.CursorShape.PointingHandCursor)
+            btn.setFixedWidth(76)
         self._btn_expense.clicked.connect(lambda: self._set_type(TYPE_EXPENSE))
         self._btn_income.clicked.connect(lambda: self._set_type(TYPE_INCOME))
-        th.addWidget(self._btn_expense)
-        th.addWidget(self._btn_income)
-        form.addRow("类型", type_row)
+        type_row.addWidget(self._btn_expense)
+        type_row.addWidget(self._btn_income)
+        type_row.addStretch(1)
+        root.addLayout(type_row)
 
-        self._purpose = QLineEdit(self)
-        self._purpose.setMaxLength(40)
-        self._purpose.setPlaceholderText("例如：午餐、地铁月卡")
-        self._purpose.setMinimumHeight(CONTROL_HEIGHT)
-        self._purpose.setText(tx.purpose if tx else "")
-        form.addRow("用途", self._purpose)
+        # ---- 用途 / 备注
+        for attr, label_text, placeholder, maxlen in (
+                ("_purpose", "用途", "例如：午餐、地铁月卡", 40),
+                ("_note", "备注", "可选", 100)):
+            line = QHBoxLayout()
+            line.setContentsMargins(0, 0, 0, 0)
+            line.setSpacing(8)
+            lab = QLabel(label_text, self)
+            lab.setObjectName("fieldLabel")
+            lab.setFixedWidth(52)
+            line.addWidget(lab)
+            edit = QLineEdit(self)
+            edit.setMaxLength(maxlen)
+            edit.setPlaceholderText(placeholder)
+            edit.setMinimumHeight(CONTROL_HEIGHT)
+            edit.setText((tx.purpose if attr == "_purpose" else tx.note) if tx else "")
+            line.addWidget(edit, 1)
+            root.addLayout(line)
+            setattr(self, attr, edit)
 
-        self._note = QLineEdit(self)
-        self._note.setMaxLength(100)
-        self._note.setPlaceholderText("可选")
-        self._note.setMinimumHeight(CONTROL_HEIGHT)
-        self._note.setText(tx.note if tx else "")
-        form.addRow("备注", self._note)
-        root.addLayout(form)
-
+        # ---- 分类
         cat_label = QLabel("分类", self)
         cat_label.setObjectName("fieldLabel")
         root.addWidget(cat_label)
@@ -373,19 +435,32 @@ class TransactionDialog(QDialog):
             self._categories.set_selected(tx.category)
         root.addWidget(self._categories)
 
+        # ---- 错误提示（按钮上方）
         self._error = QLabel("", self)
         self._error.setObjectName("invalidHint")
         self._error.setWordWrap(True)
         self._error.hide()
         root.addWidget(self._error)
 
-        buttons = QDialogButtonBox(self)
-        self._btn_save = buttons.addButton("保存账目", QDialogButtonBox.ButtonRole.AcceptRole)
-        self._btn_save.setObjectName("addBtn")
-        buttons.addButton("取消", QDialogButtonBox.ButtonRole.RejectRole)
-        buttons.accepted.connect(self._on_save)
-        buttons.rejected.connect(self.reject)
-        root.addWidget(buttons)
+        # ---- 底部按钮：取消(ghost) + 保存(primary)，右对齐
+        buttons = QHBoxLayout()
+        buttons.setContentsMargins(0, 2, 0, 0)
+        buttons.setSpacing(8)
+        buttons.addStretch(1)
+        self._btn_cancel = QPushButton("取消", self)
+        self._btn_cancel.setProperty("cls", "nav")
+        self._btn_cancel.setMinimumHeight(30)
+        self._btn_cancel.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._btn_cancel.clicked.connect(self.reject)
+        buttons.addWidget(self._btn_cancel)
+        self._btn_save = QPushButton("保存账目", self)
+        self._btn_save.setProperty("btn", "primary")
+        self._btn_save.setMinimumHeight(30)
+        self._btn_save.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._btn_save.setDefault(True)
+        self._btn_save.clicked.connect(self._on_save)
+        buttons.addWidget(self._btn_save)
+        root.addLayout(buttons)
 
         self._set_type(self._type)
         self._amount.setFocus()
@@ -393,17 +468,29 @@ class TransactionDialog(QDialog):
             self._amount.selectAll()
 
     def _set_type(self, tx_type: str) -> None:
+        """类型按钮：选中 = 该类型的柔和淡底 + 同色描边 + 同色粗体字。
+
+        底色用预置的柔和色（incomeSoft/expenseSoft），不要用「主色 + 低透明度」
+        叠加 —— 半透明主色压在灰底上会发浑（支出会变成脏棕色）。
+        """
         self._type = tx_type
-        accent = color("expense" if tx_type == TYPE_EXPENSE else "income")
-        for btn, kind in ((self._btn_expense, TYPE_EXPENSE), (self._btn_income, TYPE_INCOME)):
-            on = kind == tx_type
-            btn.setChecked(on)
-            btn.setStyleSheet(
-                f"QPushButton {{ border:1px solid {color('line')}; border-radius:7px;"
-                f" font-size:12px; color:{color('sub')}; }}"
-                + (f"QPushButton:checked {{ background:{accent}22; color:{accent};"
-                   f" border:1px solid {accent}; font-weight:600; }}" if on else "")
-            )
+        for btn, kind in ((self._btn_expense, TYPE_EXPENSE),
+                          (self._btn_income, TYPE_INCOME)):
+            accent = color("expense" if kind == TYPE_EXPENSE else "income")
+            soft = color("expenseSoft" if kind == TYPE_EXPENSE else "incomeSoft")
+            if kind == tx_type:
+                btn.setStyleSheet(
+                    f"QPushButton {{ border:1px solid {accent}; border-radius:7px;"
+                    f" background:{soft}; color:{accent}; font-weight:600;"
+                    f" font-size:12px; }}")
+                btn.setChecked(True)
+            else:
+                btn.setStyleSheet(
+                    f"QPushButton {{ border:1px solid {color('line')};"
+                    f" border-radius:7px; background:transparent;"
+                    f" color:{color('sub')}; font-size:12px; }}"
+                    f"QPushButton:hover {{ background:{color('hover')}; }}")
+                btn.setChecked(False)
 
     def _on_save(self) -> None:
         day = self._date.date().toString("yyyy-MM-dd")
@@ -425,8 +512,6 @@ class TransactionDialog(QDialog):
             return
         self.accept()
 
-
-# ==================================================================== 主页面
 class LedgerPage(QWidget):
     """记账页：明细 / 图表 / 工具 三个二级视图。"""
 
@@ -498,6 +583,35 @@ class LedgerPage(QWidget):
         v.addWidget(self._build_summary_card(inner))
         v.addWidget(self._build_filter_bar(inner))
 
+        # 表格标题行：左边"账目明细 · N 笔"，右边操作按钮（不再把按钮丢在左下角）
+        list_head = QWidget(inner)
+        lh = QHBoxLayout(list_head)
+        lh.setContentsMargins(2, 0, 2, 0)
+        lh.setSpacing(6)
+        self._list_title = QLabel("账目明细", list_head)
+        self._list_title.setObjectName("tableTitle")
+        lh.addWidget(self._list_title)
+        self._result_label = QLabel("0 笔", list_head)
+        self._result_label.setObjectName("cardHint")
+        lh.addWidget(self._result_label)
+        lh.addStretch(1)
+        self._btn_edit = QPushButton("编辑", list_head)
+        self._btn_edit.setProperty("btn", "outline")
+        self._btn_edit.setMinimumHeight(24)
+        self._btn_edit.setToolTip("编辑选中的账目（也可双击表格行）")
+        self._btn_edit.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._btn_edit.clicked.connect(self._edit_selected)
+        lh.addWidget(self._btn_edit)
+        self._btn_delete = QPushButton("删除", list_head)
+        self._btn_delete.setProperty("btn", "outline")
+        self._btn_delete.setProperty("tone", "danger")
+        self._btn_delete.setMinimumHeight(24)
+        self._btn_delete.setToolTip("删除选中的账目（右键表格行也可）")
+        self._btn_delete.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._btn_delete.clicked.connect(self._delete_selected)
+        lh.addWidget(self._btn_delete)
+        v.addWidget(list_head)
+
         self._model = TransactionModel(self)
         self._table = QTableView(inner)
         self._table.setModel(self._model)
@@ -507,17 +621,21 @@ class LedgerPage(QWidget):
         self._table.setAlternatingRowColors(False)
         self._table.setShowGrid(False)
         self._table.verticalHeader().setVisible(False)
-        self._table.verticalHeader().setDefaultSectionSize(26)
+        self._table.verticalHeader().setDefaultSectionSize(28)
         self._table.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self._table.customContextMenuRequested.connect(self._on_table_menu)
         self._table.doubleClicked.connect(lambda _i: self._edit_selected())
         header = self._table.horizontalHeader()
+        # 日期/分类/金额按内容自适应；用途拉伸吃剩余宽度；备注给固定 76px
+        # （备注多半是空的，给太宽会挤掉用途）
         header.setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
         header.setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
         header.setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
-        header.setSectionResizeMode(3, QHeaderView.ResizeMode.Interactive)
+        header.setSectionResizeMode(3, QHeaderView.ResizeMode.Fixed)
         header.setSectionResizeMode(4, QHeaderView.ResizeMode.ResizeToContents)
-        header.resizeSection(3, 70)
+        header.resizeSection(3, 76)
+        header.setHighlightSections(False)
+        self._table.setColumnWidth(3, 76)
         self._table.setMinimumHeight(150)
         self._table.setMinimumWidth(0)
         # 窄窗口下表格内部不横向滚动，列自适应压缩
@@ -525,48 +643,35 @@ class LedgerPage(QWidget):
         self._table.setWordWrap(False)
         v.addWidget(self._table, 1)
 
-        self._empty = QLabel("这里还空着\n记下第一笔支出，图表会自动生成。", inner)
+        self._empty = QLabel("这里还空着\n记下第一笔支出，图表会自动生成", inner)
         self._empty.setObjectName("emptyHint")
         self._empty.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._empty.setMinimumHeight(90)
         self._empty.hide()
         v.addWidget(self._empty)
 
-        actions = QWidget(inner)
-        actions.setFixedHeight(28)
-        ah = QHBoxLayout(actions)
-        ah.setContentsMargins(0, 0, 0, 0)
-        ah.setSpacing(4)
-        self._btn_edit = QPushButton("编辑", actions)
-        self._btn_edit.setProperty("cls", "nav")
-        self._btn_edit.setToolTip("编辑选中的账目（也可双击表格行）")
-        self._btn_edit.clicked.connect(self._edit_selected)
-        ah.addWidget(self._btn_edit)
-        self._btn_delete = QPushButton("删除", actions)
-        self._btn_delete.setProperty("cls", "nav")
-        self._btn_delete.setProperty("role", "danger")
-        self._btn_delete.clicked.connect(self._delete_selected)
-        ah.addWidget(self._btn_delete)
-        ah.addStretch(1)
-        self._result_label = QLabel("0 笔", actions)
-        self._result_label.setObjectName("dayCount")
-        ah.addWidget(self._result_label)
-        v.addWidget(actions)
-
         self._btn_add = QPushButton("＋ 记一笔", inner)
-        self._btn_add.setObjectName("addBtn")
-        self._btn_add.setMinimumHeight(30)
+        self._btn_add.setProperty("btn", "primary")
+        self._btn_add.setMinimumHeight(32)
         self._btn_add.setCursor(Qt.CursorShape.PointingHandCursor)
         self._btn_add.clicked.connect(self.add_transaction)
         v.addWidget(self._btn_add)
         return page
 
     def _build_summary_card(self, parent: QWidget) -> QWidget:
+        """月度概览卡：结构上只分三组，避免"四块互不相关的东西"。
+
+        - 组 1：本月支出 + 笔数（一行）
+        - 组 2：大号金额 + 预算进度（金额在左、预算在右对齐同一基线）
+        - 组 3：日均 / 收入 / 最高单笔（一行三段，用分隔点）
+        """
         card = QFrame(parent)
         card.setObjectName("card")
         v = QVBoxLayout(card)
-        v.setContentsMargins(10, 8, 10, 8)
-        v.setSpacing(4)
+        v.setContentsMargins(12, 10, 12, 10)
+        v.setSpacing(7)
 
+        # ---- 组 1
         row1 = QWidget(card)
         r1 = QHBoxLayout(row1)
         r1.setContentsMargins(0, 0, 0, 0)
@@ -580,31 +685,39 @@ class LedgerPage(QWidget):
         r1.addWidget(self._count_label)
         v.addWidget(row1)
 
-        self._total_label = QLabel("¥0.00", card)
-        self._total_label.setObjectName("moneyBig")
-        v.addWidget(self._total_label)
-
+        # ---- 组 2：金额（左）+ 预算与百分比（右）
         row2 = QWidget(card)
         r2 = QHBoxLayout(row2)
         r2.setContentsMargins(0, 0, 0, 0)
-        r2.setSpacing(6)
+        r2.setSpacing(8)
+        self._total_label = QLabel("¥0.00", row2)
+        self._total_label.setObjectName("moneyBig")
+        r2.addWidget(self._total_label)
+        r2.addStretch(1)
+
+        budget_box = QVBoxLayout()
+        budget_box.setSpacing(2)
+        budget_head = QHBoxLayout()
+        budget_head.setSpacing(4)
         budget_label = QLabel("月预算", row2)
         budget_label.setObjectName("cardHint")
-        r2.addWidget(budget_label)
+        budget_head.addWidget(budget_label)
         self._budget_edit = QDoubleSpinBox(row2)
         self._budget_edit.setDecimals(0)
         self._budget_edit.setRange(1, 9_999_999)
-        self._budget_edit.setFixedWidth(84)
+        self._budget_edit.setFixedWidth(72)
         self._budget_edit.setButtonSymbols(QDoubleSpinBox.ButtonSymbols.NoButtons)
         self._budget_edit.setAlignment(Qt.AlignmentFlag.AlignRight)
         self._budget_edit.setToolTip("月预算，改动后立即保存")
         self._budget_edit.setMinimumWidth(0)
         self._budget_edit.editingFinished.connect(self._on_budget_changed)
-        r2.addWidget(self._budget_edit)
+        budget_head.addWidget(self._budget_edit)
+        budget_box.addLayout(budget_head)
         self._budget_rate = QLabel("0%", row2)
         self._budget_rate.setObjectName("cardHint")
-        r2.addWidget(self._budget_rate)
-        r2.addStretch(1)
+        self._budget_rate.setAlignment(Qt.AlignmentFlag.AlignRight)
+        budget_box.addWidget(self._budget_rate)
+        r2.addLayout(budget_box)
         v.addWidget(row2)
 
         self._budget_bar = QProgressBar(card)
@@ -613,6 +726,7 @@ class LedgerPage(QWidget):
         self._budget_bar.setRange(0, 100)
         v.addWidget(self._budget_bar)
 
+        # ---- 组 3：辅助指标（一行三段）
         self._extra_label = QLabel("", card)
         self._extra_label.setObjectName("cardHint")
         self._extra_label.setWordWrap(True)
@@ -693,6 +807,9 @@ class LedgerPage(QWidget):
         self._date_to.dateChanged.connect(self.refresh_table)
         dr.addWidget(self._date_to, 1)
         dr.addStretch(1)
+        # 默认藏起日期范围：禁用状态的输入框占一行会让筛选栏显得很乱
+        date_row.setVisible(False)
+        self._date_row = date_row
         v.addWidget(date_row)
         return bar
 
@@ -756,80 +873,92 @@ class LedgerPage(QWidget):
 
     # ---- 工具页 ----
     def _build_tools_page(self) -> QWidget:
-        page = QWidget(self)
+        """工具页：滚动区 + 卡片分组。
+
+        旧版问题：直接塞进 QVBoxLayout，窄窗口下路径被截断、按钮没有样式。
+        """
+        outer = QScrollArea(self)
+        outer.setWidgetResizable(True)
+        outer.setFrameShape(QFrame.Shape.NoFrame)
+        page = QWidget(outer)
+        outer.setWidget(page)
         v = QVBoxLayout(page)
         v.setContentsMargins(0, 0, 2, 0)
         v.setSpacing(8)
 
-        def section(title: str) -> QVBoxLayout:
+        def section(title: str, desc: str, buttons: list[tuple[str, str, object]]):
+            """一个分组卡片：标题 + 说明 + 按钮行。
+
+            buttons: [(按钮文字, tone(''|'ok'|'danger'), 槽函数)]
+            """
             card = QFrame(page)
             card.setObjectName("cardFlat")
             cv = QVBoxLayout(card)
-            cv.setContentsMargins(10, 8, 10, 10)
+            cv.setContentsMargins(12, 10, 12, 12)
             cv.setSpacing(6)
+
             label = QLabel(title, card)
-            label.setObjectName("cardTitle")
+            label.setObjectName("sectionTitle")
             cv.addWidget(label)
+
+            hint = QLabel(desc, card)
+            hint.setObjectName("cardHint")
+            hint.setWordWrap(True)
+            cv.addWidget(hint)
+
+            row = QHBoxLayout()
+            row.setContentsMargins(0, 2, 0, 0)
+            row.setSpacing(8)
+            for text, tone, slot in buttons:
+                btn = QPushButton(text, card)
+                btn.setProperty("btn", "outline")
+                if tone:
+                    btn.setProperty("tone", tone)
+                btn.setMinimumHeight(28)
+                btn.setCursor(Qt.CursorShape.PointingHandCursor)
+                btn.clicked.connect(slot)
+                row.addWidget(btn)
+            row.addStretch(1)
+            cv.addLayout(row)
             v.addWidget(card)
-            return cv
+            return card
 
-        csv_box = section("CSV 导入 / 导出")
-        csv_hint = QLabel("列：日期、金额、类型、分类、用途、备注（导出带 BOM，Excel 可直接打开）", page)
-        csv_hint.setObjectName("cardHint")
-        csv_hint.setWordWrap(True)
-        csv_box.addWidget(csv_hint)
-        csv_row = QHBoxLayout()
-        btn_export = QPushButton("导出 CSV", page)
-        btn_export.clicked.connect(self.export_csv)
-        csv_row.addWidget(btn_export)
-        btn_import = QPushButton("导入 CSV", page)
-        btn_import.clicked.connect(self.import_csv)
-        csv_row.addWidget(btn_import)
-        csv_row.addStretch(1)
-        csv_box.addLayout(csv_row)
+        section("CSV 导入 / 导出",
+                "列：日期、金额、类型、分类、用途、备注。导出带 BOM，Excel 可直接打开。",
+                [("导出 CSV", "", self.export_csv),
+                 ("导入 CSV", "", self.import_csv)])
 
-        backup_box = section("备份 / 恢复")
-        backup_hint = QLabel("备份导出全部账目为 JSON；恢复为追加合并，不会清空现有数据。", page)
-        backup_hint.setObjectName("cardHint")
-        backup_hint.setWordWrap(True)
-        backup_box.addWidget(backup_hint)
-        backup_row = QHBoxLayout()
-        btn_backup = QPushButton("导出备份", page)
-        btn_backup.clicked.connect(self.export_backup)
-        backup_row.addWidget(btn_backup)
-        btn_restore = QPushButton("从备份恢复", page)
-        btn_restore.clicked.connect(self.restore_backup)
-        backup_row.addWidget(btn_restore)
-        backup_row.addStretch(1)
-        backup_box.addLayout(backup_row)
+        section("备份 / 恢复",
+                "备份把全部账目导出为 JSON；恢复是追加合并，不会清空现有数据。",
+                [("导出备份", "", self.export_backup),
+                 ("从备份恢复", "", self.restore_backup)])
 
-        media_box = section("日记媒体清理")
-        media_hint = QLabel("删除没有被子日记引用的图片与视频（旧版「先上传后保存」会留下垃圾文件）。"
-                            "被日记引用的文件绝不会删。", page)
-        media_hint.setObjectName("cardHint")
-        media_hint.setWordWrap(True)
-        media_box.addWidget(media_hint)
-        media_row = QHBoxLayout()
-        btn_scan = QPushButton("扫描孤立文件", page)
-        btn_scan.clicked.connect(lambda: self.cleanup_media(dry_run=True))
-        media_row.addWidget(btn_scan)
-        btn_clean = QPushButton("清理孤立文件", page)
-        btn_clean.clicked.connect(lambda: self.cleanup_media(dry_run=False))
-        media_row.addWidget(btn_clean)
-        media_row.addStretch(1)
-        media_box.addLayout(media_row)
+        section("日记媒体清理",
+                "删除没有被子日记引用的图片与视频（旧版「先上传后保存」会留下垃圾文件）。"
+                "被日记引用的文件绝不会删。",
+                [("扫描孤立文件", "", lambda: self.cleanup_media(dry_run=True)),
+                 ("清理孤立文件", "danger", lambda: self.cleanup_media(dry_run=False))])
 
-        data_hint = QLabel(f"数据文件：{_shorten_path(self._db.path)}", page)
+        # 数据位置：单行省略显示，完整路径进 tooltip（不能让长路径撑宽布局）
+        data_card = QFrame(page)
+        data_card.setObjectName("cardFlat")
+        dv = QVBoxLayout(data_card)
+        dv.setContentsMargins(12, 10, 12, 12)
+        dv.setSpacing(4)
+        data_title = QLabel("数据位置", data_card)
+        data_title.setObjectName("sectionTitle")
+        dv.addWidget(data_title)
+        data_hint = QLabel(_shorten_path(self._db.path), data_card)
         data_hint.setObjectName("cardHint")
-        data_hint.setWordWrap(True)
-        # 长路径不参与最小宽计算（否则会把整页最小宽度撑到 600px+）
         data_hint.setMinimumWidth(0)
         data_hint.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
-        data_hint.setToolTip(f"完整路径：{self._db.path}\n（可按 Ctrl+C 前先选中文字）")
+        data_hint.setToolTip(self._db.path)
         data_hint.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
-        v.addWidget(data_hint)
+        dv.addWidget(data_hint)
+        v.addWidget(data_card)
+
         v.addStretch(1)
-        return page
+        return outer
 
     # ------------------------------------------------------------ 外部接口
     @property
@@ -925,6 +1054,7 @@ class LedgerPage(QWidget):
     def _on_range_toggled(self, on: bool) -> None:
         self._date_from.setEnabled(on)
         self._date_to.setEnabled(on)
+        self._date_row.setVisible(on)      # 勾选后才展开起止日期
         self._picker.setEnabled(not on)
         self.refresh_table()
 

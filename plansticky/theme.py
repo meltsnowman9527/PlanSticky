@@ -40,9 +40,9 @@ LIGHT = {
 
     # ---- 账本（记账/日记/签到）专用色 ----
     "income":        "#176B4D",          # 收入绿（旧版 --green / #23805e 柱状图同色系）
-    "incomeSoft":    "#1F176B4D",
+    "incomeSoft":    "#3D176B4D",        # 选中态淡底：24% 主色，叠在灰底上不发浑
     "expense":       "#C64136",          # 支出红（旧版 --danger）
-    "expenseSoft":   "#1FC64136",
+    "expenseSoft":   "#3DC64136",
     "chartBar":      "#23805E",          # 趋势柱
     "chartGrid":     "#E3EAE6",
     "todayRing":     "#2383E2",          # 月历今日圈
@@ -76,9 +76,9 @@ DARK = {
 
     # ---- 账本专用色（深色下提高亮度保证可读）----
     "income":        "#4DBE8F",
-    "incomeSoft":    "#264DBE8F",
+    "incomeSoft":    "#3D4DBE8F",
     "expense":       "#FF7B72",
-    "expenseSoft":   "#26FF7B72",
+    "expenseSoft":   "#3DFF7B72",
     "chartBar":      "#3E9E75",
     "chartGrid":     "#2B3A32",
     "todayRing":     "#5E9BFF",
@@ -180,6 +180,31 @@ QFrame#segTrack { background: %(panel)s; border-radius: 8px; }
 QPushButton[cls="seg"][compact="true"] { padding: 4px 6px; font-size: 12px; }
 QFrame#segTrack[compact="true"] { border-radius: 7px; }
 
+/* ---- 按钮语义（三类，全局统一）----
+   之前"编辑/删除/导入CSV"等次级按钮完全没有样式，看着像没做完。
+   primary 一屏最多一个；其余用 outline；行内小操作可用 ghost。 */
+QPushButton[btn="primary"] {
+    background: %(accent)s; color: %(accentText)s;
+    border: 1px solid %(accent)s; border-radius: 7px;
+    padding: 5px 16px; font-size: 12px; font-weight: 600;
+}
+QPushButton[btn="primary"]:hover { background: %(accent)s; border-color: %(text)s; }
+QPushButton[btn="primary"]:disabled { background: %(panel)s; color: %(faint)s;
+    border-color: %(line)s; }
+QPushButton[btn="outline"] {
+    background: transparent; color: %(text)s;
+    border: 1px solid %(lineStrong)s; border-radius: 7px;
+    padding: 4px 12px; font-size: 12px;
+}
+QPushButton[btn="outline"]:hover { background: %(hover)s; border-color: %(faint)s; }
+QPushButton[btn="outline"]:disabled { color: %(faint)s; border-color: %(line)s; }
+QPushButton[btn="outline"][tone="danger"] { color: %(danger)s; }
+QPushButton[btn="outline"][tone="danger"]:hover { background: %(dangerSoft)s;
+    border-color: %(danger)s; }
+QPushButton[btn="outline"][tone="ok"] { color: %(income)s; }
+QPushButton[btn="outline"][tone="ok"]:hover { background: %(incomeSoft)s;
+    border-color: %(income)s; }
+
 /* ---- 提示条（右下角浮动，替代旧版静默失败）---- */
 QLabel#toast {
     background: %(tooltipBg)s; color: %(tooltipText)s;
@@ -197,8 +222,27 @@ QLabel#cardHint { font-size: 11px; color: %(faint)s; }
 QLabel#statValue { font-size: 16px; font-weight: 600; color: %(text)s; }
 QLabel#invalidHint { color: %(danger)s; font-size: 11px; }
 QLabel#fieldLabel { font-size: 12px; color: %(sub)s; }
+QLabel#bigMoney { font-size: 20px; font-weight: 600; color: %(text)s; }
+QLabel#sectionTitle { font-size: 13px; font-weight: 600; color: %(text)s; }
+QLabel#tableTitle { font-size: 12px; color: %(sub)s; }
 QFrame#card { background: %(panel)s; border-radius: 10px; }
 QFrame#cardFlat { border: 1px solid %(line)s; border-radius: 10px; }
+QFrame#divider { background: %(line)s; max-height: 1px; border: none; }
+/* 分类格：彩色单字图标 + 名称，整块可点 */
+QPushButton[cat="true"] {
+    border: 1px solid %(line)s; border-radius: 8px;
+    padding: 5px 4px; font-size: 12px; color: %(sub)s;
+    background: transparent; text-align: left;
+}
+QPushButton[cat="true"]:hover { background: %(hover)s; }
+QPushButton[cat="true"]:checked { font-weight: 600; color: %(text)s; }
+/* 类型切换：淡底 + 描边，不用整块实心 */
+QPushButton[typeToggle="true"] {
+    border: 1px solid %(line)s; border-radius: 7px;
+    padding: 5px 10px; font-size: 12px; color: %(sub)s;
+    background: transparent;
+}
+QPushButton[typeToggle="true"]:hover { background: %(hover)s; }
 QTableView {
     background: transparent; color: %(text)s;
     border: 1px solid %(line)s; border-radius: 8px;

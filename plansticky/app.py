@@ -55,6 +55,23 @@ def _install_excepthook() -> None:
     sys.excepthook = hook
 
 
+def _maybe_import_money_data() -> None:
+    """首次启动时把「清楚账本」的历史数据导入（只拷贝，源目录不动）。
+
+    已导入过 / 找不到旧程序时静默跳过，绝不打扰用户。
+    """
+    from plansticky import migrate_money
+    try:
+        if migrate_money.already_imported():
+            return
+        if not os.path.isfile(migrate_money.source_db_path()):
+            return
+        report = migrate_money.import_money_data()
+        print(f"[PlanSticky] {report.summary()}")
+    except Exception as exc:                   # noqa: BLE001 迁移失败不能挡住启动
+        print(f"[PlanSticky] 旧数据导入失败（不影响使用）：{exc}")
+
+
 def main(argv: list[str] | None = None) -> int:
     _set_app_user_model_id()
 
@@ -82,6 +99,13 @@ def main(argv: list[str] | None = None) -> int:
     if not si.is_first:
         return 0
 
+    # 旧账本数据迁移（仅首次、仅拷贝）
+    _maybe_import_money_data()
+
+    # 媒体目录确定存在：即便旧数据里一张图都没有，日记页也该有落盘位置
+    config.journal_images_dir()
+    config.journal_videos_dir()
+
     db = Database(config.db_path())
     theme = ThemeManager(db)
     win = MainWindow(db, theme)
@@ -95,10 +119,18 @@ def main(argv: list[str] | None = None) -> int:
         tray.refresh_tooltip()
 
     def _cleanup():
+        # 顺序很重要：先停定时器、再存几何、最后关库。
+        # 反过来（先关库）会让随后派发的 hideEvent 里的几何保存写到一个
+        # 已关闭的连接上，在 error.log 里留下假崩溃。
         theme.shutdown()
-        win._save_geometry_now()
         if tray is not None:
             tray.hide()
+        win._save_geometry_now()
+        # 清掉上次异常退出可能留下的日记临时图片
+        try:
+            win._journal_page._cleanup_orphan_pending()
+        except Exception:                      # noqa: BLE001 清理失败无关紧要
+            pass
         db.close()
 
     app.aboutToQuit.connect(_cleanup)

@@ -113,7 +113,6 @@ def make_app_icon_png_bytes(size: int = 256) -> bytes:
     ])
     p.drawPolyline(pts)
     p.end()
-    p.end()
     from PySide6.QtCore import QBuffer, QIODevice
     buf = QBuffer()
     buf.open(QIODevice.OpenModeFlag.WriteOnly)

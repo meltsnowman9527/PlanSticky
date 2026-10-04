@@ -3,9 +3,10 @@
 - 无边框自绘窗口：顶部条可拖动（Qt 原生 startSystemMove，支持 Win11 贴靠），
   窗口四边/四角 7px 热区原生缩放（startSystemResize）；
 - 记住窗口位置/大小/置顶/当前 Tab；
-- 顶部：分段 Tab（长期/短期）+ 主题、置顶、最小化、关闭按钮；
+- 顶部：分段 Tab（长期/短期/记账/日记/签到）+ 主题、置顶、最小化、关闭按钮；
 - 长期页：隐藏已完成开关 + 列表 + 添加条；
 - 短期页：← 日期 → | 今天 | 今日 3/7 + 列表 + 添加条；
+- 记账页 / 日记页 / 签到页：由各自模块提供（并入的「清楚账本」功能）；
 - 关闭按钮 = 隐藏到托盘（托盘不可用时直接退出）。
 """
 from __future__ import annotations
@@ -18,14 +19,21 @@ from PySide6.QtWidgets import (QHBoxLayout, QLabel, QMenu, QPushButton,
 from plansticky import config, icons
 from plansticky.add_bar import AddBar
 from plansticky.calendar_popup import CalendarPopup
+from plansticky.checkin_page import CheckinPage
 from plansticky.database import Database
 from plansticky.day_list import DayListView
 from plansticky.heatmap import HeatmapView
+from plansticky.journal_page import JournalPage
+from plansticky.ledger_page import LedgerPage
 from plansticky.task_list import TaskListView
-from plansticky.ui_common import Segmented, SwitchButton
+from plansticky.ui_common import Segmented, SwitchButton, Toast
 
 EDGE = 7            # 四边缩放热区宽度
-DEFAULT_W, DEFAULT_H = 320, 500
+DEFAULT_W, DEFAULT_H = 400, 560
+
+# Tab 顺序（idx -> 持久化用 key），与顶栏分段控件一一对应
+TAB_KEYS = ("long", "day", "ledger", "journal", "checkin")
+TAB_INDEX = {key: i for i, key in enumerate(TAB_KEYS)}
 
 
 class MainWindow(QWidget):
@@ -49,7 +57,7 @@ class MainWindow(QWidget):
         self.setObjectName("rootWin")
         self.setWindowTitle(config.APP_DISPLAY_NAME)
         self.setWindowFlags(Qt.WindowType.FramelessWindowHint | Qt.WindowType.Window)
-        self.setMinimumSize(300, 400)
+        self.setMinimumSize(340, 420)
         self.setWindowIcon(icons.make_app_icon())
         self.setMouseTracking(True)
 
@@ -75,7 +83,13 @@ class MainWindow(QWidget):
         tb = QHBoxLayout(self._topbar)
         tb.setContentsMargins(0, 0, 0, 0)
         tb.setSpacing(2)
-        self._seg = Segmented(["长期计划", "短期计划"], self._topbar)
+        self._seg = Segmented(["长期", "短期", "记账", "日记", "签到"], self._topbar,
+                             compact=True)
+        self._seg.button(0).setToolTip("长期计划：没有日期，一直保留")
+        self._seg.button(1).setToolTip("短期计划：按天管理")
+        self._seg.button(2).setToolTip("记账：收支、预算、图表")
+        self._seg.button(3).setToolTip("日记：图文日记与归档")
+        self._seg.button(4).setToolTip("签到：每日打卡与心情")
         self._seg.indexChanged.connect(self._on_tab_changed)
         tb.addWidget(self._seg)
         tb.addStretch(1)
@@ -103,13 +117,26 @@ class MainWindow(QWidget):
         tb.addWidget(self._btn_close)
         root.addWidget(self._topbar)
 
-        # ---- 两个 Tab 页
+        # ---- 五个 Tab 页
         self._stack = QStackedWidget(self)
         self._long_page = self._build_long_page()
         self._day_page = self._build_day_page()
-        self._stack.addWidget(self._long_page)   # 0: 长期
-        self._stack.addWidget(self._day_page)    # 1: 短期
+        self._ledger_page = LedgerPage(self._db, self._stack)
+        self._journal_page = JournalPage(self._stack)
+        self._checkin_page = CheckinPage(self._stack)
+        self._stack.addWidget(self._long_page)     # 0: 长期
+        self._stack.addWidget(self._day_page)      # 1: 短期
+        self._stack.addWidget(self._ledger_page)   # 2: 记账
+        self._stack.addWidget(self._journal_page)  # 3: 日记
+        self._stack.addWidget(self._checkin_page)  # 4: 签到
         root.addWidget(self._stack, 1)
+
+        # ---- 浮动提示条（覆盖在窗口底部）
+        self._toast = Toast(self)
+
+    def toast(self, text: str, level: str = "ok") -> None:
+        """窗口内提示：成功/普通用它，失败传 level='error'（停留更久）。"""
+        self._toast.show_message(text, level)
 
     def _make_icon_btn(self, parent, text: str, tip: str, *,
                        pixel: int = 13, checkable: bool = False) -> QPushButton:
@@ -315,9 +342,9 @@ class MainWindow(QWidget):
             self.resize(DEFAULT_W, DEFAULT_H)
             self.move(sg.right() - DEFAULT_W - 48, sg.top() + 48)
 
-        # Tab
+        # Tab（默认停在短期计划）
         tab = self._db.get_setting(config.KEY_LAST_TAB, "day")
-        idx = 1 if tab == "day" else 0
+        idx = TAB_INDEX.get(tab, TAB_INDEX["day"])
         self._seg.set_current_index(idx)
         self._stack.setCurrentIndex(idx)
 
@@ -400,17 +427,45 @@ class MainWindow(QWidget):
 
     # ============================================================ Tab / 数据
     def _on_tab_changed(self, idx: int) -> None:
+        idx = max(0, min(idx, len(TAB_KEYS) - 1))
         self._stack.setCurrentIndex(idx)
-        self._db.set_setting(config.KEY_LAST_TAB, "day" if idx == 1 else "long")
-        # 切走之前把正在输入的内容提交
+        key = TAB_KEYS[idx]
+        self._db.set_setting(config.KEY_LAST_TAB, key)
+        # 切走之前把正在输入的内容提交（只对计划页的添加条有意义）
         for bar in (self._long_add, self._day_add):
             bar.flush()
-        # 回到短期页时按当前视图刷新（跨零点日期窗口会移动）
-        if idx == 1:
+        self._toast.hide()
+
+        if key == "day":
+            # 回到短期页时按当前视图刷新（跨零点日期窗口会移动）
             if self._day_mode == "list":
                 self._day_list.reload(scroll_to_today=False)
             elif self._day_mode == "heat":
                 self._heat.refresh()
+        elif key == "ledger":
+            self._ledger_page.refresh()
+        elif key == "journal":
+            self._journal_page.refresh()
+        elif key == "checkin":
+            self._checkin_page.refresh()
+
+    def show_ledger(self, month: str | None = None) -> None:
+        """切到记账页并可选跳到某月（托盘菜单/新增成功后调用）。"""
+        self._seg.set_current_index(TAB_INDEX["ledger"])
+        if month:
+            self._ledger_page.set_month(month)
+
+    def show_journal(self, day: str | None = None) -> None:
+        """切到日记页并可选打开某天。"""
+        self._seg.set_current_index(TAB_INDEX["journal"])
+        if day:
+            self._journal_page.set_date(day)
+
+    def show_checkin(self, day: str | None = None) -> None:
+        """切到签到页并可选选中某天。"""
+        self._seg.set_current_index(TAB_INDEX["checkin"])
+        if day:
+            self._checkin_page.set_date(day)
 
     def _on_hide_done_toggled(self, on: bool) -> None:
         self._db.set_setting_bool(config.KEY_HIDE_DONE, on)
@@ -584,6 +639,8 @@ class MainWindow(QWidget):
         super().hideEvent(e)
 
     def closeEvent(self, e) -> None:          # noqa: N802
+        # 缩到托盘 = 程序继续运行，日记内容不会丢，所以不打扰用户；
+        # 只有真正退出时才需要处理未保存内容（走 quit_app 的确认）。
         self._flush_all_edits()
         self._save_geometry_now()
         if self._tray is not None and not self._quitting:
@@ -591,6 +648,9 @@ class MainWindow(QWidget):
             e.ignore()
             self.hide()
             self._tray.notify_hidden_once()
+            return
+        if not self._quitting and not self._journal_page.confirm_discard():
+            e.ignore()
             return
         e.accept()
         if not self._quitting:
@@ -604,8 +664,15 @@ class MainWindow(QWidget):
             view.finish_editing_rows()
         self._day_list.finish_editing_rows()
 
+    def has_unsaved(self) -> bool:
+        """是否有未保存的内容（目前只有日记页会有）。"""
+        return self._journal_page.has_unsaved()
+
     def quit_app(self) -> None:
         """托盘“退出程序”。"""
+        # 退出是不可逆的，未保存的日记要先问一句
+        if not self._journal_page.confirm_discard():
+            return
         self._quitting = True
         self._flush_all_edits()
         self._save_geometry_now()

@@ -1,6 +1,6 @@
 """系统托盘。
 
-菜单：打开便签 / 今日计划 / 置顶 / 主题 / 退出程序
+菜单：打开便签 / 今日计划 / 记一笔 / 写日记 / 签到 / 置顶 / 主题 / 退出程序
 行为：关闭主窗口时隐藏到托盘；单/双击托盘图标唤起。
 托盘不可用时整个功能自动跳过（close 按钮改为直接退出）。
 """
@@ -31,6 +31,20 @@ class TrayIcon(QSystemTrayIcon):
         act_today = QAction("今日计划", menu)
         act_today.triggered.connect(self._win.show_today)
         menu.addAction(act_today)
+
+        menu.addSeparator()
+
+        act_ledger = QAction("记一笔", menu)
+        act_ledger.triggered.connect(self._win.show_ledger)
+        menu.addAction(act_ledger)
+
+        act_journal = QAction("写日记", menu)
+        act_journal.triggered.connect(self._win.show_journal)
+        menu.addAction(act_journal)
+
+        act_checkin = QAction("今日签到", menu)
+        act_checkin.triggered.connect(self._win.show_checkin)
+        menu.addAction(act_checkin)
 
         menu.addSeparator()
 
@@ -78,14 +92,29 @@ class TrayIcon(QSystemTrayIcon):
             self._win.show_and_raise()
 
     def refresh_tooltip(self) -> None:
-        """今日完成/总数放进悬停提示（如 计划便签 · 今日 2/5）。"""
+        """悬停提示：计划完成度 + 本月支出（如 计划便签 · 今日 2/5 · 本月 ¥1,234）。"""
         key = QDate.currentDate().toString("yyyy-MM-dd")
         done, total = self._db.counts("day", key)
+        parts = [config.APP_DISPLAY_NAME]
         if total:
-            tip = f"{config.APP_DISPLAY_NAME} · 今日 {done}/{total}"
-        else:
-            tip = config.APP_DISPLAY_NAME
-        self.setToolTip(tip)
+            parts.append(f"今日 {done}/{total}")
+        spent = self._month_expense()
+        if spent is not None:
+            parts.append(f"本月 ¥{spent:,.0f}")
+        self.setToolTip(" · ".join(parts))
+
+    def _month_expense(self):
+        """本月支出；读不到账本库时返回 None（不影响托盘提示）。"""
+        try:
+            from datetime import date
+            from plansticky.ledger_db import LedgerDatabase
+            db = LedgerDatabase()
+            try:
+                return db.month_summary(date.today().strftime("%Y-%m")).expense
+            finally:
+                db.close()
+        except Exception:                      # noqa: BLE001 账本不可用不拖累托盘
+            return None
 
     def notify_hidden_once(self) -> None:
         if not self._shown_msg:

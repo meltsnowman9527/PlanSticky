@@ -3,5 +3,6 @@ __pycache__/
 *.pyc
 build/
 dist/
-*.spec
+# 注意：PlanSticky.spec 必须入库 —— build_exe.bat 依赖它来带上
+# assets/icon.ico 和 PySide6.QtMultimedia 的 hiddenimports（视频播放需要）。
 assets/icon.ico

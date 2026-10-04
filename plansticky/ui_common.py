@@ -5,10 +5,11 @@
 """
 from __future__ import annotations
 
-from PySide6.QtCore import QPoint, QPointF, QRectF, Qt, Signal
+from PySide6.QtCore import QPoint, QPointF, QRect, QRectF, QSize, Qt, QTimer, Signal
 from PySide6.QtGui import QColor, QFontMetrics, QPainter, QPen, QPolygonF, QPainterPath
 from PySide6.QtWidgets import (QAbstractButton, QButtonGroup, QFrame,
-                               QHBoxLayout, QPushButton, QSizePolicy, QWidget)
+                               QHBoxLayout, QLabel, QLayout, QPushButton,
+                               QSizePolicy, QWidget)
 
 from plansticky.theme import color
 
@@ -265,16 +266,23 @@ class TextLabel(QWidget):
 
 # ================================================================ 分段控件
 class Segmented(QFrame):
-    """两个选项的分段控件（长期计划 / 短期计划）。"""
+    """分段控件（长期计划 / 短期计划 / 记账 / 日记 / 签到）。
+
+    compact=True 时收紧内边距与字号，用于 5 个 Tab 挤在窄窗口里的情况。
+    """
 
     indexChanged = Signal(int)
 
-    def __init__(self, items: list[str], parent: QWidget | None = None):
+    def __init__(self, items: list[str], parent: QWidget | None = None,
+                 compact: bool = False):
         super().__init__(parent)
         self.setObjectName("segTrack")
+        if compact:
+            self.setProperty("compact", "true")
         lay = QHBoxLayout(self)
-        lay.setContentsMargins(3, 3, 3, 3)
-        lay.setSpacing(2)
+        margin = 2 if compact else 3
+        lay.setContentsMargins(margin, margin, margin, margin)
+        lay.setSpacing(1 if compact else 2)
         self._buttons = []
         # 互斥组：保证同一时刻只有一个 Tab 处于激活态；
         # 点击已激活的 Tab 不会把它关掉（否则视觉与页面会错位）。
@@ -283,6 +291,8 @@ class Segmented(QFrame):
         for i, item in enumerate(items):
             b = QPushButton(item, self)
             b.setProperty("cls", "seg")
+            if compact:
+                b.setProperty("compact", "true")
             b.setCheckable(True)
             b.setCursor(Qt.CursorShape.PointingHandCursor)
             b.clicked.connect(lambda _=False, idx=i: self.indexChanged.emit(idx))
@@ -306,3 +316,138 @@ class Segmented(QFrame):
             return
         self._buttons[idx].setChecked(True)
         self.indexChanged.emit(idx)
+
+    def button(self, idx: int) -> QPushButton | None:
+        if 0 <= idx < len(self._buttons):
+            return self._buttons[idx]
+        return None
+
+
+# ================================================================ 提示条
+class Toast(QLabel):
+    """窗口内浮动提示条（替代旧版“失败静默”）。
+
+    用法：host.toast("已记下一笔")；错误用 host.toast("...", level="error")，
+    错误停留时间更长，便于看清。
+    """
+
+    def __init__(self, host: QWidget):
+        super().__init__(host)
+        self._host = host
+        self.setObjectName("toast")
+        self.setProperty("level", "ok")
+        self.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.setWordWrap(True)
+        self.hide()
+        self._timer = QTimer(self)
+        self._timer.setSingleShot(True)
+        self._timer.timeout.connect(self.hide)
+
+    def show_message(self, text: str, level: str = "ok",
+                     duration: int | None = None) -> None:
+        self.setProperty("level", level if level in ("ok", "error") else "ok")
+        self.setProperty("info", "true" if level not in ("ok", "error") else "false")
+        self.setText(str(text))
+        # 改了动态属性要重新 polish 才会应用新 QSS
+        self.style().unpolish(self)
+        self.style().polish(self)
+        self.adjustSize()
+        self._reposition()
+        self.show()
+        self.raise_()
+        if duration is None:
+            duration = 4200 if level == "error" else 2200
+        # 错误信息按文字长度延长，避免长句没看完就消失
+        if level == "error":
+            duration = max(duration, min(9000, 1600 + 90 * len(str(text))))
+        self._timer.start(duration)
+
+    def _reposition(self) -> None:
+        host = self._host
+        margin = 14
+        width = min(self.sizeHint().width() + 8, max(160, host.width() - margin * 2))
+        self.setFixedWidth(width)
+        self.adjustSize()
+        x = (host.width() - self.width()) // 2
+        y = host.height() - self.height() - margin
+        self.move(max(margin, x), max(margin, y))
+
+    def resizeEvent(self, e) -> None:      # noqa: N802
+        super().resizeEvent(e)
+        if self.isVisible():
+            self._reposition()
+
+
+# ================================================================ 流式布局
+class FlowLayout(QLayout):
+    """自动换行的横向布局（标签胶囊、分类格子用）。
+
+    Qt 没有内置的流式布局，按官方示例实现 heightForWidth 版本。
+    """
+
+    def __init__(self, parent: QWidget | None = None, margin: int = 0,
+                 spacing: int = 4):
+        super().__init__(parent)
+        self._items: list = []
+        self._spacing = spacing
+        self.setContentsMargins(margin, margin, margin, margin)
+
+    def addItem(self, item) -> None:          # noqa: N802
+        self._items.append(item)
+
+    def count(self) -> int:
+        return len(self._items)
+
+    def itemAt(self, index: int):             # noqa: N802
+        if 0 <= index < len(self._items):
+            return self._items[index]
+        return None
+
+    def takeAt(self, index: int):             # noqa: N802
+        if 0 <= index < len(self._items):
+            return self._items.pop(index)
+        return None
+
+    def expandingDirections(self):            # noqa: N802
+        return Qt.Orientation(0)
+
+    def hasHeightForWidth(self) -> bool:      # noqa: N802
+        return True
+
+    def heightForWidth(self, width: int) -> int:   # noqa: N802
+        return self._do_layout(QRect(0, 0, width, 0), test_only=True)
+
+    def setGeometry(self, rect: QRect) -> None:    # noqa: N802
+        super().setGeometry(rect)
+        self._do_layout(rect, test_only=False)
+
+    def sizeHint(self) -> QSize:              # noqa: N802
+        return self.minimumSize()
+
+    def minimumSize(self) -> QSize:           # noqa: N802
+        size = QSize()
+        for item in self._items:
+            size = size.expandedTo(item.minimumSize())
+        margins = self.contentsMargins()
+        return size + QSize(margins.left() + margins.right(),
+                            margins.top() + margins.bottom())
+
+    def _do_layout(self, rect: QRect, test_only: bool) -> int:
+        margins = self.contentsMargins()
+        effective = rect.adjusted(margins.left(), margins.top(),
+                                  -margins.right(), -margins.bottom())
+        x, y = effective.x(), effective.y()
+        line_height = 0
+        for item in self._items:
+            hint = item.sizeHint()
+            next_x = x + hint.width() + self._spacing
+            if next_x - self._spacing > effective.right() and line_height > 0:
+                x = effective.x()
+                y = y + line_height + self._spacing
+                next_x = x + hint.width() + self._spacing
+                line_height = 0
+            if not test_only:
+                item.setGeometry(QRect(QPoint(x, y), hint))
+            x = next_x
+            line_height = max(line_height, hint.height())
+        return y + line_height - rect.y() + margins.bottom()

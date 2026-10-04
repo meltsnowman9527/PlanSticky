@@ -45,6 +45,10 @@ class Database:
     def __init__(self, path: str):
         self.path = path
         self._conn: Optional[sqlite3.Connection] = None
+        # 关闭后 Qt 仍可能在窗口隐藏/析构时回调 _save_geometry_now()，
+        # 这类“迟到的写入”在退出路径上属于正常现象，不该抛异常（会在
+        # error.log 里留下假崩溃记录）。用 _closing 标记静默忽略。
+        self._closing = False
         self._open()
 
     # ------------------------------------------------------------- 连接
@@ -60,6 +64,7 @@ class Database:
         self._conn = conn
 
     def close(self) -> None:
+        self._closing = True
         if self._conn is not None:
             try:
                 self._conn.commit()
@@ -68,9 +73,21 @@ class Database:
                 pass
             self._conn = None
 
+    @property
+    def is_closed(self) -> bool:
+        return self._conn is None
+
     def _conn_or_raise(self) -> sqlite3.Connection:
-        if self._conn is None:  # close() 之后再写属于编程错误，直接暴露
+        if self._conn is None:
             raise RuntimeError("database closed")
+        return self._conn
+
+    def _conn_or_none(self) -> Optional[sqlite3.Connection]:
+        """写操作专用：关闭后返回 None（调用方静默跳过）。
+
+        与 `_conn_or_raise` 的分工：UI 状态（窗口几何等）用这个，
+        业务数据（任务、设置）仍用会抛异常的那个，避免真的写丢了还无声。
+        """
         return self._conn
 
     # ------------------------------------------------------- 区域 SQL 帮助
@@ -88,7 +105,10 @@ class Database:
         return row["value"] if row else default
 
     def set_setting(self, key: str, value: str) -> None:
-        c = self._conn_or_raise()
+        """写入设置。**数据库已关闭时静默跳过**，原因见 __init__ 里 _closing 的说明。"""
+        c = self._conn_or_none()
+        if c is None:
+            return
         c.execute(
             "INSERT INTO settings(key, value) VALUES(?, ?) "
             "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
@@ -120,6 +140,9 @@ class Database:
         return None
 
     def save_geometry(self, x: int, y: int, w: int, h: int) -> None:
+        """保存窗口几何。数据库已关闭时静默跳过（退出路径会走到这里）。"""
+        if self._conn_or_none() is None:
+            return
         import json
         self.set_setting("window_geometry", json.dumps({"x": int(x), "y": int(y), "w": int(w), "h": int(h)}))
 

@@ -37,6 +37,18 @@ LIGHT = {
     "tooltipBg":     "#3F3F3E",
     "tooltipText":   "#F5F5F4",
     "emptyHint":     "#9B9A97",
+
+    # ---- 账本（记账/日记/签到）专用色 ----
+    "income":        "#176B4D",          # 收入绿（旧版 --green / #23805e 柱状图同色系）
+    "incomeSoft":    "#1F176B4D",
+    "expense":       "#C64136",          # 支出红（旧版 --danger）
+    "expenseSoft":   "#1FC64136",
+    "chartBar":      "#23805E",          # 趋势柱
+    "chartGrid":     "#E3EAE6",
+    "todayRing":     "#2383E2",          # 月历今日圈
+    "selectedSoft":  "#1F2383E2",
+    "ok":            "#176B4D",          # 成功提示
+    "warn":          "#D27718",          # 警告提示
 }
 
 DARK = {
@@ -61,6 +73,18 @@ DARK = {
     "tooltipBg":     "#3A3A3A",
     "tooltipText":   "#F5F5F4",
     "emptyHint":     "#7C7C7C",
+
+    # ---- 账本专用色（深色下提高亮度保证可读）----
+    "income":        "#4DBE8F",
+    "incomeSoft":    "#264DBE8F",
+    "expense":       "#FF7B72",
+    "expenseSoft":   "#26FF7B72",
+    "chartBar":      "#3E9E75",
+    "chartGrid":     "#2B3A32",
+    "todayRing":     "#5E9BFF",
+    "selectedSoft":  "#265E9BFF",
+    "ok":            "#4DBE8F",
+    "warn":          "#E0A050",
 }
 
 # 当前生效的配色（自绘控件在 paintEvent 里实时读取，主题切换后整窗重绘）
@@ -152,6 +176,72 @@ QPushButton[cls="seg"] { border-radius: 6px; color: %(sub)s; padding: 4px 12px; 
 QPushButton[cls="seg"]:hover { color: %(text)s; }
 QPushButton[cls="seg"]:checked { background: %(accentSoft)s; color: %(accent)s; }
 QFrame#segTrack { background: %(panel)s; border-radius: 8px; }
+/* 紧凑分段：5 个 Tab 要挤进窄窗口，用更小的内边距与字号 */
+QPushButton[cls="seg"][compact="true"] { padding: 4px 6px; font-size: 12px; }
+QFrame#segTrack[compact="true"] { border-radius: 7px; }
+
+/* ---- 提示条（右下角浮动，替代旧版静默失败）---- */
+QLabel#toast {
+    background: %(tooltipBg)s; color: %(tooltipText)s;
+    border-radius: 8px; padding: 7px 12px; font-size: 12px;
+}
+QLabel#toast[level="error"] { background: %(danger)s; color: #FFFFFF; }
+QLabel#toast[level="ok"] { background: %(ok)s; color: #FFFFFF; }
+
+/* ---- 账本：金额/统计/表格 ---- */
+QLabel#moneyBig { font-size: 22px; font-weight: 600; color: %(text)s; }
+QLabel#moneyIncome { color: %(income)s; font-weight: 600; }
+QLabel#moneyExpense { color: %(expense)s; font-weight: 600; }
+QLabel#cardTitle { font-size: 12px; color: %(sub)s; }
+QLabel#cardHint { font-size: 11px; color: %(faint)s; }
+QLabel#statValue { font-size: 16px; font-weight: 600; color: %(text)s; }
+QLabel#invalidHint { color: %(danger)s; font-size: 11px; }
+QLabel#fieldLabel { font-size: 12px; color: %(sub)s; }
+QFrame#card { background: %(panel)s; border-radius: 10px; }
+QFrame#cardFlat { border: 1px solid %(line)s; border-radius: 10px; }
+QTableView {
+    background: transparent; color: %(text)s;
+    border: 1px solid %(line)s; border-radius: 8px;
+    gridline-color: %(line)s; selection-background-color: %(accentSoft)s;
+    selection-color: %(text)s; outline: none;
+}
+QTableView::item { padding: 4px 6px; border: none; }
+QHeaderView::section {
+    background: %(panel)s; color: %(sub)s;
+    border: none; border-bottom: 1px solid %(line)s;
+    padding: 5px 6px; font-size: 11px;
+}
+QComboBox, QDateEdit, QSpinBox, QDoubleSpinBox {
+    background: %(panel)s; color: %(text)s;
+    border: 1px solid %(line)s; border-radius: 7px;
+    padding: 4px 6px;
+}
+QComboBox:focus, QDateEdit:focus, QSpinBox:focus, QDoubleSpinBox:focus {
+    border: 1px solid %(accent)s;
+}
+QComboBox::drop-down { border: none; width: 16px; }
+QComboBox QAbstractItemView {
+    background: %(menuBg)s; color: %(text)s;
+    border: 1px solid %(line)s; border-radius: 6px;
+    selection-background-color: %(hover)s; outline: none;
+}
+QTextEdit, QPlainTextEdit {
+    background: %(panel)s; color: %(text)s;
+    border: 1px solid %(line)s; border-radius: 8px; padding: 6px;
+    selection-background-color: %(accent)s; selection-color: %(accentText)s;
+}
+QTextEdit:focus, QPlainTextEdit:focus { border: 1px solid %(accent)s; }
+QProgressBar {
+    background: %(panel)s; border: none; border-radius: 3px;
+    height: 6px; text-align: center;
+}
+QProgressBar::chunk { background: %(income)s; border-radius: 3px; }
+QCheckBox { color: %(text)s; font-size: 12px; }
+QCheckBox::indicator { width: 14px; height: 14px; }
+QGroupBox { color: %(sub)s; font-size: 12px; border: 1px solid %(line)s;
+    border-radius: 8px; margin-top: 8px; padding-top: 8px; }
+QGroupBox::title { subcontrol-origin: margin; left: 8px; padding: 0 4px; }
+QSplitter::handle { background: %(line)s; }
 
 /* ---- 对话框按钮 ---- */
 QDialog QPushButton, QMessageBox QPushButton {

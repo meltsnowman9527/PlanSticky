@@ -104,24 +104,50 @@ def main() -> int:
     check("default tab = day", win._stack.currentIndex() == 1)
 
     # Tab 切换回归：分段按钮互斥、重复点击已激活 Tab 页面不跳变
+    # 现在有 5 个 Tab（长期/短期/记账/日记/签到），断言按数量自适应
     def seg_states():
         return [b.isChecked() for b in win._seg._buttons]
+
+    def exclusive(idx: int) -> bool:
+        """只有 idx 处于激活态。"""
+        want = [i == idx for i in range(len(seg_states()))]
+        return seg_states() == want
+
     win._seg._buttons[0].click()      # 切长期
     app.processEvents()
     check("tab to long exclusive", win._stack.currentIndex() == 0
-          and seg_states() == [True, False], str(seg_states()))
+          and exclusive(0), str(seg_states()))
     win._seg._buttons[0].click()      # 重复点击长期：不应切走/全灭
     app.processEvents()
     check("tab re-click stable", win._stack.currentIndex() == 0
-          and seg_states() == [True, False], str(seg_states()))
+          and exclusive(0), str(seg_states()))
     win._seg._buttons[1].click()      # 切短期
     app.processEvents()
     check("tab to day exclusive", win._stack.currentIndex() == 1
-          and seg_states() == [False, True], str(seg_states()))
+          and exclusive(1), str(seg_states()))
     win._seg._buttons[1].click()
     app.processEvents()
     check("tab re-click day stable", win._stack.currentIndex() == 1
-          and seg_states() == [False, True], str(seg_states()))
+          and exclusive(1), str(seg_states()))
+
+    # 三个新增 Tab（记账/日记/签到）都能切换、互斥、并持久化
+    from plansticky.main_window import TAB_KEYS
+    check("共 5 个 Tab", len(TAB_KEYS) == 5 and len(seg_states()) == 5,
+          f"{TAB_KEYS}")
+    for idx, key in ((2, "ledger"), (3, "journal"), (4, "checkin")):
+        win._seg._buttons[idx].click()
+        app.processEvents()
+        check(f"tab to {key} works", win._stack.currentIndex() == idx
+              and exclusive(idx) and db.get_setting("last_tab") == key,
+              f"idx={win._stack.currentIndex()} states={seg_states()} "
+              f"persisted={db.get_setting('last_tab')}")
+    # 新页面对象确实被挂到栈上
+    check("ledger page wired", win._stack.widget(2) is win._ledger_page)
+    check("journal page wired", win._stack.widget(3) is win._journal_page)
+    check("checkin page wired", win._stack.widget(4) is win._checkin_page)
+    # 切回短期，避免影响后续断言
+    win._seg.set_current_index(1)
+    app.processEvents()
 
     # 今天加两条：第一条回车提交（Enter 路径）
     win.show_today()
@@ -357,8 +383,11 @@ def main() -> int:
         win._shift_day(1)
         win._shift_day(-1)
     app.processEvents()
+    # 提示条本身就是窗口内的 QLabel，不是游离控件，排除掉
+    win._toast.hide()
+    app.processEvents()
     stray = [w.metaObject().className() for w in app.topLevelWidgets()
-             if w.isVisible() and w is not win
+             if w.isVisible() and w is not win and w is not win._toast
              and ('TaskRow' in w.metaObject().className()
                   or 'QLabel' in w.metaObject().className())]
     check("no stray top-level rows/labels after day switches", not stray, str(stray))
@@ -369,7 +398,23 @@ def main() -> int:
     check("persist across reopen", len(db2.list_tasks("long")) == 5
           and db2.counts("long")[1] == 5)
     check("settings persist", db2.get_setting("hello") == "world")
+
+    # 回归：关闭后迟到的写入（退出时 hideEvent 会存窗口几何）不得抛异常，
+    # 否则会在 error.log 里留下假崩溃记录
     db2.close()
+    check("close 后 is_closed", db2.is_closed is True)
+    try:
+        db2.save_geometry(1, 2, 3, 4)
+        db2.set_setting("late", "write")
+        check("close 后迟到写入被静默忽略", True)
+    except Exception as exc:                     # noqa: BLE001
+        check("close 后迟到写入被静默忽略", False, f"{type(exc).__name__}: {exc}")
+    # 但业务写操作仍应显式报错，避免真丢数据还无声
+    try:
+        db2.add_task("long", "不该成功")
+        check("close 后新增任务仍报错", False, "没有抛异常")
+    except RuntimeError:
+        check("close 后新增任务仍报错", True)
 
     print("-" * 46)
     if FAILURES:

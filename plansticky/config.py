@@ -12,7 +12,7 @@ import sys
 
 APP_ID = "PlanSticky"                      # 单实例 / AppUserModelID 用（ASCII）
 APP_DISPLAY_NAME = "计划便签"               # 界面/托盘显示名
-APP_VERSION = "1.0.0"
+APP_VERSION = "1.1.0"                      # 1.1.0 = 并入记账/日记/签到
 
 SINGLE_INSTANCE_KEY = "plansticky_single_instance"
 
@@ -20,9 +20,16 @@ SINGLE_INSTANCE_KEY = "plansticky_single_instance"
 KEY_THEME = "theme"                        # light | dark | system
 KEY_GEOMETRY = "window_geometry"           # x,y,w,h
 KEY_PINNED = "window_pinned"               # 1 | 0
-KEY_LAST_TAB = "last_tab"                  # day | long
-KEY_DAY_MODE = "day_mode"                  # single | list（短期页视图）
+KEY_LAST_TAB = "last_tab"                  # day | long | ledger | journal | checkin
+KEY_DAY_MODE = "day_mode"                  # single | list | heat（短期页视图）
 KEY_HIDE_DONE = "hide_done_long"           # 1 | 0
+
+# ---- 账本（清楚账本并入）相关 ----
+KEY_LEDGER_TAB = "ledger_tab"              # detail | charts（记账页二级视图）
+KEY_MONEY_IMPORTED = "money_imported"      # 1 = 旧数据已导入过（幂等守卫）
+KEY_TX_DRAFT = "tx_draft"                  # 记账表单未提交的草稿（JSON）
+KEY_JOURNAL_DRAFT = "journal_draft"        # 日记未保存草稿（旧的 HTML）
+KEY_BUDGET = "budget"                      # 月预算（字符串数字）
 
 
 def is_frozen() -> bool:
@@ -52,6 +59,25 @@ def data_dir() -> str:
 
 def db_path() -> str:
     return os.path.join(data_dir(), "plans.db")
+
+
+def ledger_db_path() -> str:
+    """账本数据库（记账/日记/签到）。与 plans.db 分开，互不影响。"""
+    return os.path.join(data_dir(), "ledger.db")
+
+
+def journal_images_dir() -> str:
+    """日记图片目录（不存在则创建）。"""
+    path = os.path.join(data_dir(), "journal-images")
+    os.makedirs(path, exist_ok=True)
+    return path
+
+
+def journal_videos_dir() -> str:
+    """日记视频目录（不存在则创建）。"""
+    path = os.path.join(data_dir(), "journal-videos")
+    os.makedirs(path, exist_ok=True)
+    return path
 
 
 def log_path() -> str:

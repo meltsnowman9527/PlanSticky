@@ -39,6 +39,10 @@ from plansticky.ui_common import Segmented
 
 TREND_RANGES = [(7, "7天"), (30, "30天"), (90, "三个月")]
 FMT = "%Y-%m-%d"
+# 输入控件（下拉框/日期框/输入框）的统一最小高度。
+# Qt 默认 sizeHint 只有 22px，而 QSS 的 padding 会再压缩内容区，
+# 导致文字被上下裁掉（实测"看起来显示有问题"就是这个）。
+CONTROL_HEIGHT = 26
 
 
 def _shorten_path(path: str) -> str:
@@ -309,6 +313,7 @@ class TransactionDialog(QDialog):
         self._date = QDateEdit(self)
         self._date.setCalendarPopup(True)
         self._date.setDisplayFormat("yyyy-MM-dd")
+        self._date.setMinimumHeight(CONTROL_HEIGHT)
         self._date.setDate(QDate.fromString(tx.date, "yyyy-MM-dd") if tx
                            else QDate.currentDate())
         form.addRow("日期", self._date)
@@ -325,6 +330,7 @@ class TransactionDialog(QDialog):
         if tx is None:
             self._amount.setSpecialValueText("—")     # 0 时显示“—”，提示还没填
         self._amount.setAlignment(Qt.AlignmentFlag.AlignRight)
+        self._amount.setMinimumHeight(CONTROL_HEIGHT)
         form.addRow("金额（元）", self._amount)
 
         # 类型切换：支出红 / 收入绿（与旧版配色一致）
@@ -347,12 +353,14 @@ class TransactionDialog(QDialog):
         self._purpose = QLineEdit(self)
         self._purpose.setMaxLength(40)
         self._purpose.setPlaceholderText("例如：午餐、地铁月卡")
+        self._purpose.setMinimumHeight(CONTROL_HEIGHT)
         self._purpose.setText(tx.purpose if tx else "")
         form.addRow("用途", self._purpose)
 
         self._note = QLineEdit(self)
         self._note.setMaxLength(100)
         self._note.setPlaceholderText("可选")
+        self._note.setMinimumHeight(CONTROL_HEIGHT)
         self._note.setText(tx.note if tx else "")
         form.addRow("备注", self._note)
         root.addLayout(form)
@@ -626,6 +634,7 @@ class LedgerPage(QWidget):
         self._search.setPlaceholderText("搜索用途或备注")
         self._search.setClearButtonEnabled(True)
         self._search.setMinimumWidth(0)
+        self._search.setMinimumHeight(CONTROL_HEIGHT)
         self._search.textChanged.connect(self.refresh_table)
         v.addWidget(self._search)
 
@@ -639,6 +648,7 @@ class LedgerPage(QWidget):
         for name in CATEGORY_NAMES:
             self._filter_cat.addItem(f"{category_icon(name)} {name}")
         self._filter_cat.setMinimumWidth(72)
+        self._filter_cat.setMinimumHeight(CONTROL_HEIGHT)
         self._filter_cat.currentIndexChanged.connect(self.refresh_table)
         rh.addWidget(self._filter_cat, 1)
 
@@ -647,6 +657,7 @@ class LedgerPage(QWidget):
         self._filter_type.addItem("支出", TYPE_EXPENSE)
         self._filter_type.addItem("收入", TYPE_INCOME)
         self._filter_type.setMinimumWidth(72)
+        self._filter_type.setMinimumHeight(CONTROL_HEIGHT)
         self._filter_type.currentIndexChanged.connect(self.refresh_table)
         rh.addWidget(self._filter_type, 1)
 
@@ -667,6 +678,7 @@ class LedgerPage(QWidget):
         self._date_from.setEnabled(False)
         # 窄窗口下拉日期框不能按 sizeHint（164px）撑宽布局
         self._date_from.setMinimumWidth(96)
+        self._date_from.setMinimumHeight(CONTROL_HEIGHT)
         self._date_from.dateChanged.connect(self.refresh_table)
         dr.addWidget(self._date_from, 1)
         tilde = QLabel("~", date_row)
@@ -677,6 +689,7 @@ class LedgerPage(QWidget):
         self._date_to.setDate(QDate.currentDate())
         self._date_to.setEnabled(False)
         self._date_to.setMinimumWidth(96)
+        self._date_to.setMinimumHeight(CONTROL_HEIGHT)
         self._date_to.dateChanged.connect(self.refresh_table)
         dr.addWidget(self._date_to, 1)
         dr.addStretch(1)

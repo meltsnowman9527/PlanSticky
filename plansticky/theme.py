@@ -214,16 +214,33 @@ QHeaderView::section {
 QComboBox, QDateEdit, QSpinBox, QDoubleSpinBox {
     background: %(panel)s; color: %(text)s;
     border: 1px solid %(line)s; border-radius: 7px;
-    padding: 4px 6px;
+    padding: 3px 6px;
+    /* 关键：内边距会把内容区压到放不下文字（默认高仅 22px），
+       必须给足最小高度，否则文字上下被裁掉。 */
+    min-height: 20px;
 }
 QComboBox:focus, QDateEdit:focus, QSpinBox:focus, QDoubleSpinBox:focus {
     border: 1px solid %(accent)s;
 }
+QComboBox:disabled, QDateEdit:disabled, QSpinBox:disabled, QDoubleSpinBox:disabled {
+    color: %(faint)s; background: %(bg)s;
+}
 QComboBox::drop-down { border: none; width: 16px; }
+/* 下拉弹层：全局 `QWidget { background: transparent }` 会把弹层
+   （QComboBoxPrivateContainer 是顶层 widget）也变成透明，
+   导致条目看不清、像是"选不了"。这里显式给不透明底色。 */
 QComboBox QAbstractItemView {
     background: %(menuBg)s; color: %(text)s;
     border: 1px solid %(line)s; border-radius: 6px;
-    selection-background-color: %(hover)s; outline: none;
+    selection-background-color: %(accent)s; selection-color: %(accentText)s;
+    outline: none; padding: 2px;
+}
+QComboBox QAbstractItemView::item {
+    min-height: 20px; padding: 2px 6px; border-radius: 4px;
+}
+QComboBox QAbstractItemView::item:hover { background: %(hover)s; }
+QComboBox QAbstractItemView::item:selected {
+    background: %(accent)s; color: %(accentText)s;
 }
 QTextEdit, QPlainTextEdit {
     background: %(panel)s; color: %(text)s;
